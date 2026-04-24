@@ -86,6 +86,64 @@ async function main(): Promise<void> {
     log(`Additional MCP server: ${name} (${serverConfig.command})`);
   }
 
+  // Global MCP servers enabled when their credential files are mounted from
+  // the host. Available to all agent groups (v1 behavior preserved).
+  // Notion MCP requires clearing HTTPS_PROXY — OneCLI's gateway only routes
+  // Anthropic APIs, so Notion calls must bypass the proxy.
+  const NOTION_TOKEN_PATH = '/home/node/.notion-mcp/token';
+  const GMAIL_CREDS_PATH = '/home/node/.gmail-mcp/credentials.json';
+  const GMAIL_OHAD_CREDS_PATH = '/home/node/.gmail-mcp-ohad/credentials.json';
+  const GCAL_OAUTH_PATH = '/home/node/.gmail-mcp/gcp-oauth.keys.json';
+
+  if (fs.existsSync(GMAIL_CREDS_PATH)) {
+    mcpServers.gmail = {
+      command: 'npx',
+      args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+      env: {},
+    };
+    log('Gmail MCP server enabled');
+  }
+  if (fs.existsSync(GMAIL_OHAD_CREDS_PATH)) {
+    mcpServers.gmail_ohad = {
+      command: 'npx',
+      args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+      env: {
+        GMAIL_CREDENTIALS_PATH: '/home/node/.gmail-mcp-ohad/credentials.json',
+        GMAIL_OAUTH_PATH: '/home/node/.gmail-mcp-ohad/gcp-oauth.keys.json',
+      },
+    };
+    log('Gmail-Ohad MCP server enabled');
+  }
+  if (fs.existsSync(GCAL_OAUTH_PATH)) {
+    mcpServers.gcal = {
+      command: 'npx',
+      args: ['-y', '@cocal/google-calendar-mcp'],
+      env: {
+        GOOGLE_OAUTH_CREDENTIALS: GCAL_OAUTH_PATH,
+      },
+    };
+    log('Google Calendar MCP server enabled');
+  }
+  if (fs.existsSync(NOTION_TOKEN_PATH)) {
+    const notionToken = fs.readFileSync(NOTION_TOKEN_PATH, 'utf-8').trim();
+    if (notionToken) {
+      mcpServers.notion = {
+        command: 'npx',
+        args: ['-y', '@notionhq/notion-mcp-server'],
+        env: {
+          NOTION_TOKEN: notionToken,
+          NO_PROXY: 'api.notion.com',
+          no_proxy: 'api.notion.com',
+          HTTPS_PROXY: '',
+          HTTP_PROXY: '',
+          https_proxy: '',
+          http_proxy: '',
+        },
+      };
+      log('Notion MCP server enabled');
+    }
+  }
+
   const provider = createProvider(providerName, {
     assistantName: config.assistantName || undefined,
     mcpServers,

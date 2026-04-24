@@ -38,4 +38,8 @@ groups/*
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# Per-project session status (maintained by user's session-start hook)
+.claude/STATUS.md
+.claude/logs/
+
 agents-sdk-docs

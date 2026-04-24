@@ -5,6 +5,7 @@
  */
 import { ChildProcess, execSync, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { OneCLI } from '@onecli-sh/sdk';
@@ -306,6 +307,26 @@ function buildMounts(
   const skillsSrc = path.join(projectRoot, 'container', 'skills');
   if (fs.existsSync(skillsSrc)) {
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
+  }
+
+  // Gmail / Calendar / Notion MCP credentials — mount from host home if
+  // present. Available to all agent groups (matches v1 user config).
+  const homeDir = os.homedir();
+  const gmailDir = path.join(homeDir, '.gmail-mcp');
+  if (fs.existsSync(gmailDir)) {
+    mounts.push({ hostPath: gmailDir, containerPath: '/home/node/.gmail-mcp', readonly: false });
+  }
+  const gmailOhadDir = path.join(homeDir, '.gmail-mcp-ohad');
+  if (fs.existsSync(gmailOhadDir)) {
+    mounts.push({ hostPath: gmailOhadDir, containerPath: '/home/node/.gmail-mcp-ohad', readonly: false });
+  }
+  const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
+  if (fs.existsSync(gcalDir)) {
+    mounts.push({ hostPath: gcalDir, containerPath: '/home/node/.config/google-calendar-mcp', readonly: false });
+  }
+  const notionDir = path.join(homeDir, '.notion-mcp');
+  if (fs.existsSync(notionDir)) {
+    mounts.push({ hostPath: notionDir, containerPath: '/home/node/.notion-mcp', readonly: true });
   }
 
   // Additional mounts from container config
