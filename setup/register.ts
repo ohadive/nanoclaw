@@ -8,38 +8,96 @@ import fs from 'fs';
 import path from 'path';
 
 import { STORE_DIR } from '../src/config.ts';
-import { initDatabase, setRegisteredGroup } from '../src/db.ts';
+import { initDatabase, setRegisteredGroup, storeChatMetadata } from '../src/db.ts';
 import { isValidGroupFolder } from '../src/group-folder.ts';
 import { logger } from '../src/logger.ts';
 import { emitStatus } from './status.ts';
 
 interface RegisterArgs {
-  jid: string;
+  platformId: string;
   name: string;
   trigger: string;
   folder: string;
   channel: string;
   requiresTrigger: boolean;
+  isGroup: boolean | null; // null = infer from platformId format
   isMain: boolean;
   assistantName: string;
+  sessionMode: string;
+}
+
+/**
+ * Return the ID as-is if it already carries channel context; otherwise prefix
+ * it with `${channel}:`. IDs that must never be prefixed:
+ *   - already namespaced (starts with `${channel}:` or a known short prefix)
+ *   - WhatsApp/XMPP JIDs (contain `@`)
+ *   - Phone numbers (start with `+`)
+ *   - group: URIs
+ */
+function namespacedPlatformId(channel: string, rawId: string): string {
+  // Short prefixes used by existing adapters (tg:, dc:, sl:, …)
+  const shortPrefixes: Record<string, string> = {
+    telegram: 'tg:',
+    discord: 'dc:',
+    slack: 'sl:',
+    signal: 'si:',
+  };
+  const shortPrefix = shortPrefixes[channel];
+  if (
+    rawId.startsWith(`${channel}:`) ||
+    (shortPrefix !== undefined && rawId.startsWith(shortPrefix)) ||
+    rawId.includes('@') ||
+    rawId.startsWith('+') ||
+    rawId.startsWith('group:')
+  ) {
+    return rawId;
+  }
+  return `${channel}:${rawId}`;
+}
+
+/**
+ * Infer whether a platform ID refers to a group or a DM based on
+ * well-known ID patterns.
+ */
+function inferIsGroup(channel: string, platformId: string): boolean {
+  if (channel === 'whatsapp') {
+    if (platformId.endsWith('@g.us')) return true;
+    if (platformId.endsWith('@s.whatsapp.net')) return false;
+  }
+  if (channel === 'telegram') {
+    // Telegram supergroups/channels use negative IDs
+    const numPart = platformId.replace(/^tg:/, '');
+    if (numPart.startsWith('-')) return true;
+    // Plain positive integer → private DM
+    if (/^\d+$/.test(numPart)) return false;
+  }
+  if (channel === 'signal') {
+    return !platformId.startsWith('+');
+  }
+  return true; // safe default: assume group
 }
 
 function parseArgs(args: string[]): RegisterArgs {
   const result: RegisterArgs = {
-    jid: '',
+    platformId: '',
     name: '',
     trigger: '',
     folder: '',
     channel: 'whatsapp', // backward-compat: pre-refactor installs omit --channel
     requiresTrigger: true,
+    isGroup: null,
     isMain: false,
     assistantName: 'Andy',
+    sessionMode: 'isolated',
   };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case '--jid':
-        result.jid = args[++i] || '';
+      case '--platform-id':
+        result.platformId = args[++i] || '';
+        break;
+      case '--jid': // backwards-compat alias for --platform-id
+        result.platformId = result.platformId || args[++i] || '';
         break;
       case '--name':
         result.name = args[++i] || '';
@@ -56,11 +114,20 @@ function parseArgs(args: string[]): RegisterArgs {
       case '--no-trigger-required':
         result.requiresTrigger = false;
         break;
+      case '--is-group':
+        result.isGroup = true;
+        break;
+      case '--no-is-group':
+        result.isGroup = false;
+        break;
       case '--is-main':
         result.isMain = true;
         break;
       case '--assistant-name':
         result.assistantName = args[++i] || 'Andy';
+        break;
+      case '--session-mode':
+        result.sessionMode = args[++i] || 'isolated';
         break;
     }
   }
@@ -72,7 +139,7 @@ export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const parsed = parseArgs(args);
 
-  if (!parsed.jid || !parsed.name || !parsed.trigger || !parsed.folder) {
+  if (!parsed.platformId || !parsed.name || !parsed.folder) {
     emitStatus('REGISTER_CHANNEL', {
       STATUS: 'failed',
       ERROR: 'missing_required_args',
@@ -90,7 +157,19 @@ export async function run(args: string[]): Promise<void> {
     process.exit(4);
   }
 
-  logger.info(parsed, 'Registering channel');
+  // Apply namespacing: never double-prefix native JIDs (@s.whatsapp.net, tg:…, +phone)
+  const jid = namespacedPlatformId(parsed.channel, parsed.platformId);
+
+  // Determine group vs DM, honouring explicit flag over inference
+  const isGroup =
+    parsed.isGroup !== null ? parsed.isGroup : inferIsGroup(parsed.channel, jid);
+
+  // For DMs: respond to every message (requiresTrigger=false, trigger='.')
+  // For groups: respect --no-trigger-required; default trigger to '.' if not given.
+  const requiresTrigger = isGroup ? parsed.requiresTrigger : false;
+  const trigger = parsed.trigger || '.';
+
+  logger.info({ ...parsed, jid, isGroup, requiresTrigger, trigger }, 'Registering channel');
 
   // Ensure data and store directories exist (store/ may not exist on
   // fresh installs that skip WhatsApp auth, which normally creates it)
@@ -100,14 +179,17 @@ export async function run(args: string[]): Promise<void> {
   // Initialize database (creates schema + runs migrations)
   initDatabase();
 
-  setRegisteredGroup(parsed.jid, {
+  setRegisteredGroup(jid, {
     name: parsed.name,
     folder: parsed.folder,
-    trigger: parsed.trigger,
+    trigger,
     added_at: new Date().toISOString(),
-    requiresTrigger: parsed.requiresTrigger,
+    requiresTrigger,
     isMain: parsed.isMain,
   });
+
+  // Record channel/is_group in the chats table so the router can use it.
+  storeChatMetadata(jid, new Date().toISOString(), parsed.name, parsed.channel, isGroup);
 
   logger.info('Wrote registration to SQLite');
 
@@ -188,12 +270,14 @@ export async function run(args: string[]): Promise<void> {
   }
 
   emitStatus('REGISTER_CHANNEL', {
-    JID: parsed.jid,
+    JID: jid,
     NAME: parsed.name,
     FOLDER: parsed.folder,
     CHANNEL: parsed.channel,
-    TRIGGER: parsed.trigger,
-    REQUIRES_TRIGGER: parsed.requiresTrigger,
+    TRIGGER: trigger,
+    IS_GROUP: isGroup,
+    REQUIRES_TRIGGER: requiresTrigger,
+    SESSION_MODE: parsed.sessionMode,
     ASSISTANT_NAME: parsed.assistantName,
     NAME_UPDATED: nameUpdated,
     STATUS: 'success',
