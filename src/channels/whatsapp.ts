@@ -549,12 +549,14 @@ registerChannelAdapter('whatsapp', {
             const sender = msg.key.participant || msg.key.remoteJid || '';
             const senderName = msg.pushName || sender.split('@')[0];
             const fromMe = msg.key.fromMe || false;
-            // Filter bot's own messages to prevent echo loops.
-            // fromMe is always true for messages sent from this linked device,
-            // regardless of ASSISTANT_HAS_OWN_NUMBER mode.
-            if (fromMe) continue;
-
             const isBotMessage = ASSISTANT_HAS_OWN_NUMBER ? false : content.startsWith(`${ASSISTANT_NAME}:`);
+            // Echo prevention. In ASSISTANT_HAS_OWN_NUMBER mode the bot has
+            // a dedicated number, so every fromMe message is its own reply.
+            // In shared-number mode (linked device on the user's own
+            // WhatsApp), the user's self-chats ALSO appear as fromMe; the
+            // outbound path prefixes the bot's replies with
+            // `${ASSISTANT_NAME}: ` (line 700), so we drop only those.
+            if (fromMe && (ASSISTANT_HAS_OWN_NUMBER || isBotMessage)) continue;
 
             // Check if this reply answers a pending question via slash command
             const pending = pendingQuestions.get(chatJid);

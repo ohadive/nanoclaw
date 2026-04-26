@@ -329,6 +329,12 @@ function buildMounts(
     mounts.push({ hostPath: notionDir, containerPath: '/home/node/.notion-mcp', readonly: true });
   }
 
+  // FameClaw config (audience profiles, brand info, scan/score outputs) —
+  // RW so the agent's prospecting work persists across container spawns.
+  const fameclawDir = path.join(homeDir, '.config', 'fameclaw');
+  fs.mkdirSync(fameclawDir, { recursive: true });
+  mounts.push({ hostPath: fameclawDir, containerPath: '/home/node/.config/fameclaw', readonly: false });
+
   // Additional mounts from container config
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);
