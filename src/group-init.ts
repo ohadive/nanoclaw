@@ -19,6 +19,47 @@ const DEFAULT_SETTINGS_JSON =
     2,
   ) + '\n';
 
+const MNEMON_HOOKS: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>> = {
+  SessionStart: [{ hooks: [{ type: 'command', command: '/app/hooks/mnemon/prime.sh' }] }],
+  UserPromptSubmit: [{ hooks: [{ type: 'command', command: '/app/hooks/mnemon/user_prompt.sh' }] }],
+  Stop: [{ hooks: [{ type: 'command', command: '/app/hooks/mnemon/stop.sh' }] }],
+  PreCompact: [{ hooks: [{ type: 'command', command: '/app/hooks/mnemon/compact.sh' }] }],
+};
+
+/**
+ * Idempotent merge of mnemon hooks into the group's settings.json. Runs on
+ * every initGroupFilesystem call so existing groups (which already have a
+ * settings.json from before mnemon shipped) also pick up the hooks. Skips
+ * silently on malformed JSON to avoid breaking a group spawn.
+ */
+function ensureMnemonHooks(settingsFile: string): boolean {
+  let settings: { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>; [k: string]: unknown } = {};
+  if (fs.existsSync(settingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    } catch {
+      return false;
+    }
+  }
+  const existingHooks = settings.hooks ?? {};
+  let changed = false;
+  for (const [event, entries] of Object.entries(MNEMON_HOOKS)) {
+    const existing = existingHooks[event] ?? [];
+    const alreadyHas = existing.some((entry) =>
+      entry?.hooks?.some((h) => typeof h?.command === 'string' && h.command.startsWith('/app/hooks/mnemon/'))
+    );
+    if (!alreadyHas) {
+      existingHooks[event] = [...existing, ...entries];
+      changed = true;
+    }
+  }
+  if (changed) {
+    settings.hooks = existingHooks;
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  }
+  return changed;
+}
+
 /**
  * Initialize the on-disk filesystem state for an agent group. Idempotent —
  * every step is gated on the target not already existing, so re-running on
@@ -71,6 +112,9 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(settingsFile, DEFAULT_SETTINGS_JSON);
     initialized.push('settings.json');
+  }
+  if (ensureMnemonHooks(settingsFile)) {
+    initialized.push('mnemon-hooks');
   }
 
   // Skills directory — created empty here; symlinks are synced at spawn

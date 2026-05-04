@@ -335,6 +335,19 @@ function buildMounts(
   fs.mkdirSync(fameclawDir, { recursive: true });
   mounts.push({ hostPath: fameclawDir, containerPath: '/home/node/.config/fameclaw', readonly: false });
 
+  // mnemon — per-group memory store (RW). Path-mirrored to host so the user
+  // can inspect or back up via ~/.mnemon/data/<folder>/.
+  const groupMnemonDir = path.join(homeDir, '.mnemon', 'data', agentGroup.folder);
+  fs.mkdirSync(groupMnemonDir, { recursive: true });
+  mounts.push({ hostPath: groupMnemonDir, containerPath: '/home/node/.mnemon/data/default', readonly: false });
+
+  // mnemon — global shared memory (RO). Optional; only mounted if the user
+  // has populated ~/.mnemon/data/global/ with cross-group knowledge.
+  const globalMnemonDir = path.join(homeDir, '.mnemon', 'data', 'global');
+  if (fs.existsSync(globalMnemonDir)) {
+    mounts.push({ hostPath: globalMnemonDir, containerPath: '/home/node/.mnemon/data/global', readonly: true });
+  }
+
   // Additional mounts from container config
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);
