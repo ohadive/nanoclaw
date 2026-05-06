@@ -46,7 +46,7 @@ function ensureMnemonHooks(settingsFile: string): boolean {
   for (const [event, entries] of Object.entries(MNEMON_HOOKS)) {
     const existing = existingHooks[event] ?? [];
     const alreadyHas = existing.some((entry) =>
-      entry?.hooks?.some((h) => typeof h?.command === 'string' && h.command.startsWith('/app/hooks/mnemon/'))
+      entry?.hooks?.some((h) => typeof h?.command === 'string' && h.command.startsWith('/app/hooks/mnemon/')),
     );
     if (!alreadyHas) {
       existingHooks[event] = [...existing, ...entries];
