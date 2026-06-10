@@ -53,8 +53,19 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
     fs.mkdirSync(fragmentsDir, { recursive: true });
   }
 
-  // Desired fragment set.
-  const config = readContainerConfig(group.folder);
+  // Desired fragment set. Read-only here, so tolerate a corrupt config by
+  // falling back to empty — the spawn-path read (container-runner) is the
+  // gate that aborts on corruption; composition shouldn't be the failure point.
+  let config: ReturnType<typeof readContainerConfig>;
+  try {
+    config = readContainerConfig(group.folder);
+  } catch (err) {
+    log.warn('container.json unreadable during CLAUDE.md compose — using empty config', {
+      folder: group.folder,
+      err: String(err),
+    });
+    config = { mcpServers: {}, packages: { apt: [], npm: [] }, additionalMounts: [], skills: 'all' };
+  }
   const desired = new Map<string, { type: 'symlink' | 'inline'; content: string }>();
 
   // Skill fragments — every skill that ships an `instructions.md`.
@@ -120,6 +131,9 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
   for (const name of [...desired.keys()].sort()) {
     imports.push(`@./.claude-fragments/${name}`);
   }
+  // Per-group memory. Claude Code CLI auto-loads CLAUDE.local.md from cwd,
+  // but the Agent SDK does not — import it explicitly.
+  imports.push('@./CLAUDE.local.md');
   const body = [COMPOSED_HEADER, ...imports, ''].join('\n');
   writeAtomic(path.join(groupDir, 'CLAUDE.md'), body);
 
