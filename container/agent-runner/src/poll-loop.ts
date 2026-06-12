@@ -1,4 +1,5 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { selectBatch, pollerAction, type QueryMode } from './query-mode.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
@@ -7,7 +8,7 @@ import {
   migrateLegacyContinuation,
   setContinuation,
 } from './db/session-state.js';
-import { formatMessages, extractRouting, categorizeMessage, isClearCommand, isRunnerCommand, stripInternalTags, type RoutingContext } from './formatter.js';
+import { formatMessages, extractRouting, categorizeMessage, isClearCommand, isRunnerCommand, stripInternalTags, saveInboundAttachments, type RoutingContext } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 
 const POLL_INTERVAL_MS = 1000;
@@ -63,32 +64,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
   let pollCount = 0;
   while (true) {
-    // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages().filter((m) => m.kind !== 'system');
+    const pending = getPendingMessages().filter((m) => m.kind !== 'system');
     pollCount++;
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
-      log(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
+      log(`Poll heartbeat (${pollCount} iterations, ${pending.length} pending)`);
     }
 
-    if (messages.length === 0) {
+    const selection = selectBatch(pending);
+    if (!selection) {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
-
-    // Accumulate gate: if the batch contains only trigger=0 rows
-    // (context-only, router-stored under ignored_message_policy='accumulate'),
-    // don't wake the agent. Leave them `pending` — they'll ride along the
-    // next time a real trigger=1 message lands via this same getPendingMessages
-    // query. Without this gate, a warm container keeps processing
-    // (and potentially responding to) every accumulate-only batch, defeating
-    // the "store as context, don't engage" contract. Host-side countDueMessages
-    // gates the same way for wake-from-cold (see src/db/session-db.ts).
-    if (!messages.some((m) => m.trigger === 1)) {
-      await sleep(POLL_INTERVAL_MS);
-      continue;
-    }
+    const { mode, rows: messages } = selection;
 
     const ids = messages.map((m) => m.id);
     markProcessing(ids);
@@ -154,6 +143,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    // Save any base64 attachment data to disk so Claude can read them.
+    saveInboundAttachments(keep, '/workspace/agent/attachments');
+
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
     const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
@@ -162,7 +154,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     const query = config.provider.query({
       prompt,
-      continuation,
+      continuation: mode === 'chat' ? continuation : undefined,
       cwd: config.cwd,
       systemContext: config.systemContext,
     });
@@ -171,8 +163,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const skippedSet = new Set(skipped);
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
-      if (result.continuation && result.continuation !== continuation) {
+      const result = await processQuery(query, routing, processingIds, config.providerName, mode);
+      if (mode === 'chat' && result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
       }
@@ -250,6 +242,7 @@ async function processQuery(
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  mode: QueryMode,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -287,23 +280,20 @@ async function processQuery(
           return;
         }
 
-        // Skip system messages (MCP tool responses).
-        // Thread routing is the router's concern — if a message landed in this
-        // session, the agent should see it. Per-thread sessions already isolate
-        // threads into separate containers; shared sessions intentionally merge
-        // everything. Filtering on thread_id here caused deadlocks when the
-        // initial batch and follow-ups had mismatched thread_ids (e.g. a
-        // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        const nonSystem = pending.filter((m) => m.kind !== 'system');
+        const action = pollerAction(mode, nonSystem);
+        if (action.end) {
+          log(`Pending ${mode === 'chat' ? 'task' : 'chat/next-task'} rows — ending ${mode} stream for outer loop`);
+          endedForCommand = true;
+          query.end();
+          return;
+        }
+        const newMessages = action.push;
         if (newMessages.length === 0) return;
 
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);
 
-        // Run pre-task scripts on follow-ups too — without this, a task that
-        // arrives during an active query (e.g. a */10 monitoring cron) bypasses
-        // its script gate and always wakes the agent, defeating the gate.
-        // Mirrors the initial-batch hook above.
         let keep = newMessages;
         let skipped: string[] = [];
         // MODULE-HOOK:scheduling-pre-task-followup:start
@@ -348,13 +338,11 @@ async function processQuery(
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
-        // Persist immediately so a mid-turn container crash still lets the
-        // next wake resume the conversation. Without this, the session id
-        // was only written after the full stream completed — if the
-        // container died between `init` and `result`, the SDK session was
-        // effectively orphaned and the next message started a blank
-        // Claude session with no prior context.
-        setContinuation(providerName, event.continuation);
+        if (mode === 'chat') {
+          setContinuation(providerName, event.continuation);
+        } else {
+          log(`Ephemeral task session ${event.continuation} (not persisted)`);
+        }
       } else if (event.type === 'result') {
         // A result — with or without text — means the turn is done. Mark
         // the initial batch completed now so the host sweep doesn't see
@@ -364,7 +352,7 @@ async function processQuery(
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
         if (event.text) {
-          dispatchResultText(event.text, routing);
+          dispatchResultText(event.text, routing, mode);
         }
       }
     }
@@ -404,8 +392,17 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * cleaned text (with <internal> tags stripped) is sent to that destination.
  * This preserves the simple case of one user on one channel — the agent
  * doesn't need to know about wrapping syntax at all.
+ *
+ * The shortcut applies only in chat mode, where a human is waiting on the
+ * turn. In task mode (scheduled routines) there is no human turn: the final
+ * result text is the routine's internal sign-off ("nothing to do, staying
+ * silent"), not a message. Auto-posting it spams the task's originating
+ * thread every run. Routines that need to speak do so explicitly via
+ * <message to="..."> blocks or the send_message MCP tool (which writes to
+ * messages_out directly, bypassing this function) — those still fire in
+ * task mode. Only the unwrapped-scratchpad fallback is suppressed.
  */
-function dispatchResultText(text: string, routing: RoutingContext): void {
+export function dispatchResultText(text: string, routing: RoutingContext, mode: QueryMode): void {
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
@@ -438,8 +435,10 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
 
   // Single-destination shortcut: the agent wrote plain text — send to
   // the session's originating channel (from session_routing) if available,
-  // otherwise fall back to the single destination.
-  if (sent === 0 && scratchpad) {
+  // otherwise fall back to the single destination. Chat mode only — in task
+  // mode this unwrapped text is a routine's internal sign-off, not a message
+  // (see the function doc comment).
+  if (sent === 0 && scratchpad && mode === 'chat') {
     if (routing.channelType && routing.platformId) {
       // Reply to the channel/thread the message came from
       writeMessageOut({

@@ -4,6 +4,7 @@ import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
+import { dispatchResultText } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 
 beforeEach(() => {
@@ -189,6 +190,31 @@ describe('mock provider', () => {
     expect(results).toHaveLength(2);
     expect(results[0].text).toBe('Re: First');
     expect(results[1].text).toBe('Re: Second');
+  });
+});
+
+describe('dispatchResultText: unwrapped auto-post is chat-only', () => {
+  const routing = {
+    inReplyTo: 'm1',
+    platformId: 'slack:C066MSYBKCH',
+    channelType: 'slack',
+    threadId: 'slack:C066MSYBKCH:1780668061',
+  };
+
+  it('chat mode: unwrapped text replies to the originating channel/thread', () => {
+    dispatchResultText('All emails already processed. Nothing to do.', routing, 'chat');
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('All emails already processed. Nothing to do.');
+    expect(out[0].thread_id).toBe(routing.threadId);
+  });
+
+  it('task mode: unwrapped sign-off is NOT posted — the idle-spam bug', () => {
+    // A scheduled routine that finds nothing actionable ends its turn with an
+    // internal sign-off. In task mode there is no human waiting; auto-posting
+    // it spammed the originating Slack thread every 15 minutes.
+    dispatchResultText('Nothing actionable found. Staying silent.', routing, 'task');
+    expect(getUndeliveredMessages()).toHaveLength(0);
   });
 });
 

@@ -25,3 +25,7 @@ Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific i
 ### Internal thoughts
 
 Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent.
+
+### Threading
+
+Reply in the thread you were addressed in — your replies stay in that thread by default. Keep **one thread to one topic**: each thread is its own conversation with its own context. When a genuinely new task or topic comes up, **start a new thread** with `send_message({ ..., new_thread: true })` (a fresh root message in the channel) rather than piling it onto a long, unrelated thread. Prefer many short, focused threads over one giant thread — they're far easier for the user to follow and reply to.

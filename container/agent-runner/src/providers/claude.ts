@@ -257,11 +257,13 @@ export class ClaudeProvider implements AgentProvider {
   private mcpServers: Record<string, McpServerConfig>;
   private env: Record<string, string | undefined>;
   private additionalDirectories?: string[];
+  private extraDisallowedTools: string[];
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
     this.mcpServers = options.mcpServers ?? {};
     this.additionalDirectories = options.additionalDirectories;
+    this.extraDisallowedTools = options.extraDisallowedTools ?? [];
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -285,13 +287,13 @@ export class ClaudeProvider implements AgentProvider {
         cwd: input.cwd,
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
-        pathToClaudeCodeExecutable: '/pnpm/claude',
+        pathToClaudeCodeExecutable: '/pnpm/bin/claude',
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
           ...TOOL_ALLOWLIST,
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
-        disallowedTools: SDK_DISALLOWED_TOOLS,
+        disallowedTools: [...SDK_DISALLOWED_TOOLS, ...this.extraDisallowedTools],
         env: this.env,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,

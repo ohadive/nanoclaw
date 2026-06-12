@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
 import { findByRouting } from './destinations.js';
 import type { MessageInRow } from './db/messages-in.js';
 import { TIMEZONE, formatLocalTime } from './timezone.js';
@@ -240,11 +243,57 @@ function formatAttachments(attachments: any[] | undefined): string {
     const localPath = a.localPath ? `/workspace/${a.localPath}` : '';
     const url = a.url || '';
     if (localPath) {
-      return `[${type}: ${escapeXml(name)} — saved to ${escapeXml(localPath)}]`;
+      return `[${type}: ${escapeXml(name)} — use Read tool on ${escapeXml(localPath)} to view]`;
     }
     return url ? `[${type}: ${escapeXml(name)} (${escapeXml(url)})]` : `[${type}: ${escapeXml(name)}]`;
   });
   return '\n' + parts.join('\n');
+}
+
+function extFromMime(mimeType: string | undefined): string {
+  if (!mimeType) return '';
+  const map: Record<string, string> = {
+    'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+    'application/pdf': 'pdf',
+  };
+  return map[mimeType] ?? mimeType.split('/').pop() ?? '';
+}
+
+/**
+ * Walk messages and write any base64 attachment data to disk under
+ * `attachmentsDir`. Mutates each attachment in-place: sets `localPath`
+ * and clears `data` so the base64 blob doesn't end up in the prompt.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function saveInboundAttachments(messages: MessageInRow[], attachmentsDir: string): void {
+  let dirCreated = false;
+  for (const msg of messages) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let content: any;
+    try { content = JSON.parse(msg.content); } catch { continue; }
+    if (!Array.isArray(content?.attachments)) continue;
+
+    let dirty = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const att of content.attachments as any[]) {
+      if (!att.data || att.localPath) continue;
+      if (!dirCreated) {
+        mkdirSync(attachmentsDir, { recursive: true });
+        dirCreated = true;
+      }
+      const safeName = (att.name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const ext = extFromMime(att.mimeType);
+      const filename = `${msg.id}-${safeName}${safeName.includes('.') ? '' : (ext ? '.' + ext : '')}`;
+      writeFileSync(join(attachmentsDir, filename), Buffer.from(att.data as string, 'base64'));
+      att.localPath = `agent/attachments/${filename}`;
+      att.data = undefined;
+      dirty = true;
+    }
+    if (dirty) {
+      (msg as { content: string }).content = JSON.stringify(content);
+    }
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

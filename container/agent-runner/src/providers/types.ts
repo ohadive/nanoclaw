@@ -25,6 +25,8 @@ export interface ProviderOptions {
   mcpServers?: Record<string, McpServerConfig>;
   env?: Record<string, string | undefined>;
   additionalDirectories?: string[];
+  /** Extra tool names to disallow, appended to the provider's built-in blocklist. */
+  extraDisallowedTools?: string[];
 }
 
 export interface QueryInput {

@@ -212,6 +212,19 @@ export function initTestSessionDb(): { inbound: Database; outbound: Database } {
       platform_id     TEXT,
       agent_group_id  TEXT
     );
+    -- Manager-only roster projection. At runtime inbound.db is read-only here;
+    -- the HOST creates + populates this table (writeAgentRoster) before each
+    -- manager wake. Created in the test schema so container tests have parity.
+    -- Keep columns in sync with AGENT_ROSTER_DDL in
+    -- src/modules/agent-control/write-roster.ts on the host.
+    CREATE TABLE IF NOT EXISTS agent_roster (
+      agent_group_id TEXT PRIMARY KEY,
+      name           TEXT NOT NULL,
+      paused_at      TEXT,
+      paused_reason  TEXT,
+      last_active    TEXT,
+      running        INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   _outbound = new Database(':memory:');

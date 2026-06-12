@@ -16,6 +16,8 @@ export interface RunnerConfig {
   agentGroupId: string;
   maxMessagesPerPrompt: number;
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  /** Per-group tool blocklist appended to SDK_DISALLOWED_TOOLS in claude.ts. */
+  disallowedTools: string[];
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -43,6 +45,7 @@ export function loadConfig(): RunnerConfig {
     agentGroupId: (raw.agentGroupId as string) || '',
     maxMessagesPerPrompt: (raw.maxMessagesPerPrompt as number) || DEFAULT_MAX_MESSAGES,
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
+    disallowedTools: (raw.disallowedTools as string[]) || [],
   };
 
   return _config;

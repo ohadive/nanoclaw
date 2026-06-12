@@ -5,8 +5,12 @@
  * send_message(to="agent-name") since agents and channels share the
  * unified destinations namespace.
  *
- * create_agent is admin-only. Non-admin containers never see this tool
- * (see mcp-tools/index.ts). The host re-checks permission on receive.
+ * NOTE: there is no per-agent tool gating today — mcp-tools/index.ts imports
+ * every tool module unconditionally, so create_agent is exposed to all agents
+ * and the host handler (src/modules/agent-to-agent/create-agent.ts) applies it
+ * without an admin check. The only manager-gated tools are in orchestration.ts,
+ * which self-gates on groupName AND is re-checked host-side. If create_agent
+ * needs gating, follow that pattern.
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';

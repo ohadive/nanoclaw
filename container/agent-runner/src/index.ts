@@ -206,6 +206,7 @@ async function main(): Promise<void> {
     mcpServers,
     env: { ...process.env },
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
+    extraDisallowedTools: config.disallowedTools,
   });
 
   await runPollLoop({

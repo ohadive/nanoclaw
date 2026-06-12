@@ -47,9 +47,14 @@ function destinationList(): string {
  * the same channel the session is bound to, the session's thread_id is
  * preserved so replies land in the correct thread. Otherwise thread_id
  * is null (a cross-destination send starts a new conversation).
+ *
+ * If `newThread` is true, thread_id is forced to null even for the current
+ * channel — the message becomes a new root message, starting a fresh thread.
+ * Use this to break a new topic out of a long thread.
  */
 function resolveRouting(
   to: string | undefined,
+  newThread = false,
 ):
   | { channel_type: string; platform_id: string; thread_id: string | null; resolvedName: string }
   | { error: string } {
@@ -60,8 +65,8 @@ function resolveRouting(
       return {
         channel_type: session.channel_type,
         platform_id: session.platform_id,
-        thread_id: session.thread_id,
-        resolvedName: '(current conversation)',
+        thread_id: newThread ? null : session.thread_id,
+        resolvedName: newThread ? '(new thread)' : '(current conversation)',
       };
     }
     // No session routing (e.g., agent-shared or internal-only agent) —
@@ -79,10 +84,11 @@ function resolveRouting(
   if (!dest) return { error: `Unknown destination "${to}". Known: ${destinationList()}` };
   if (dest.type === 'channel') {
     // If the destination is the same channel the session is bound to,
-    // preserve the thread_id so replies land in the correct thread.
+    // preserve the thread_id so replies land in the correct thread —
+    // unless newThread is set, which forces a fresh top-level thread.
     const session = getSessionRouting();
     const threadId =
-      session.channel_type === dest.channelType && session.platform_id === dest.platformId
+      !newThread && session.channel_type === dest.channelType && session.platform_id === dest.platformId
         ? session.thread_id
         : null;
     return {
@@ -99,12 +105,13 @@ export const sendMessage: McpToolDefinition = {
   tool: {
     name: 'send_message',
     description:
-      'Send a message to a named destination. If you have only one destination, you can omit `to`.',
+      'Send a message to a named destination. If you have only one destination, you can omit `to`. Set `new_thread` to start a fresh thread for a new topic instead of replying in the current one.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         to: { type: 'string', description: 'Destination name (e.g., "family", "worker-1"). Optional if you have only one destination.' },
         text: { type: 'string', description: 'Message content' },
+        new_thread: { type: 'boolean', description: 'Start a new thread in the channel (a new root message) instead of replying in the current thread. Use for a genuinely new topic.' },
       },
       required: ['text'],
     },
@@ -113,7 +120,7 @@ export const sendMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!text) return err('text is required');
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string | undefined, args.new_thread as boolean | undefined);
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
@@ -134,7 +141,7 @@ export const sendMessage: McpToolDefinition = {
 export const sendFile: McpToolDefinition = {
   tool: {
     name: 'send_file',
-    description: 'Send a file to a named destination. If you have only one destination, you can omit `to`.',
+    description: 'Send a file to a named destination. If you have only one destination, you can omit `to`. Set `new_thread` to start a fresh thread for a new topic.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -142,6 +149,7 @@ export const sendFile: McpToolDefinition = {
         path: { type: 'string', description: 'File path (relative to /workspace/agent/ or absolute)' },
         text: { type: 'string', description: 'Optional accompanying message' },
         filename: { type: 'string', description: 'Display name (default: basename of path)' },
+        new_thread: { type: 'boolean', description: 'Start a new thread in the channel instead of replying in the current thread.' },
       },
       required: ['path'],
     },
@@ -150,7 +158,7 @@ export const sendFile: McpToolDefinition = {
     const filePath = args.path as string;
     if (!filePath) return err('path is required');
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string | undefined, args.new_thread as boolean | undefined);
     if ('error' in routing) return err(routing.error);
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
