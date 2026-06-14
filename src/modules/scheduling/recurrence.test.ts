@@ -8,8 +8,9 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { closeDb, createAgentGroup, getDb, initTestDb, runMigrations } from '../../db/index.js';
 import { ensureSchema, openInboundDb } from '../../db/session-db.js';
 import { insertTask } from './db.js';
 import { handleRecurrence } from './recurrence.js';
@@ -38,7 +39,23 @@ function fakeSession(): Session {
   } as Session;
 }
 
+// handleRecurrence consults the central DB (agent_groups.paused_at) to skip
+// fanout for paused groups, so the central DB must be initialized and the
+// session's agent group must exist. Default fixture is an unpaused group.
+beforeEach(() => {
+  const db = initTestDb();
+  runMigrations(db);
+  createAgentGroup({
+    id: 'ag-test',
+    name: 'Test Agent',
+    folder: 'test-agent',
+    agent_provider: null,
+    created_at: new Date().toISOString(),
+  });
+});
+
 afterEach(() => {
+  closeDb();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
@@ -94,5 +111,30 @@ describe('handleRecurrence', () => {
 
     const count = (db.prepare(`SELECT COUNT(*) AS c FROM messages_in`).get() as { c: number }).c;
     expect(count).toBe(1);
+  });
+
+  it('skips fanout while the agent group is paused', async () => {
+    getDb().prepare(`UPDATE agent_groups SET paused_at = ? WHERE id = 'ag-test'`).run(new Date().toISOString());
+    const db = freshDb();
+    insertTask(db, {
+      id: 'task-1',
+      processAfter: '2020-01-01T00:00:00.000Z',
+      recurrence: '0 9 * * *',
+      platformId: null,
+      channelType: null,
+      threadId: null,
+      content: JSON.stringify({ prompt: 'daily digest' }),
+    });
+    db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-1'`).run();
+
+    await handleRecurrence(db, fakeSession());
+
+    // No clone created, and the recurrence is left intact so it resumes on unpause.
+    const rows = db.prepare(`SELECT id, recurrence FROM messages_in`).all() as Array<{
+      id: string;
+      recurrence: string | null;
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].recurrence).toBe('0 9 * * *');
   });
 });
