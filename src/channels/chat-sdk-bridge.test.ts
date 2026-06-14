@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Adapter, AdapterPostableMessage, RawMessage } from 'chat';
 
-import { createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
+import { anchorOpenThreadId, createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
 
 function stubAdapter(partial: Partial<Adapter>): Adapter {
   return { name: 'stub', ...partial } as unknown as Adapter;
@@ -203,5 +203,24 @@ describe('createChatSdkBridge.deliver — display cards (send_card)', () => {
     expect(calls).toHaveLength(1);
     const msg = calls[0].message as { markdown?: string };
     expect(msg.markdown).toBe('plain hello');
+  });
+});
+
+describe('anchorOpenThreadId', () => {
+  it('anchors a Slack top-level thread id (trailing colon) on the message ts', () => {
+    expect(anchorOpenThreadId('slack:C07ULQAHPNG:', '1780236217.870689')).toBe('slack:C07ULQAHPNG:1780236217.870689');
+  });
+
+  it('leaves a well-formed threaded id unchanged', () => {
+    const tid = 'slack:C07ULQAHPNG:1779799908.157349';
+    expect(anchorOpenThreadId(tid, '1780236217.870689')).toBe(tid);
+  });
+
+  it('returns the open id unchanged when there is no message id to anchor on', () => {
+    expect(anchorOpenThreadId('slack:C07ULQAHPNG:', undefined)).toBe('slack:C07ULQAHPNG:');
+  });
+
+  it('does not touch non-colon-terminated ids from other adapters', () => {
+    expect(anchorOpenThreadId('telegram:12345', 'abc')).toBe('telegram:12345');
   });
 });

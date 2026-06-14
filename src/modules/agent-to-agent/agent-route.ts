@@ -23,6 +23,7 @@ import path from 'path';
 
 import { isSafeAttachmentName } from '../../attachment-safety.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
+import { getMessagingGroupAgentByPair } from '../../db/messaging-groups.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
@@ -116,10 +117,25 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
       `unauthorized agent-to-agent: ${session.agent_group_id} has no destination for ${targetAgentGroupId}`,
     );
   }
-  if (!getAgentGroup(targetAgentGroupId)) {
+  const targetGroup = getAgentGroup(targetAgentGroupId);
+  if (!targetGroup) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
-  const { session: targetSession } = resolveSession(targetAgentGroupId, null, null, 'agent-shared');
+
+  // If the target designates a "console" messaging group (the orchestration
+  // manager does — its owner DM), deliver into that messaging group's session
+  // so the reply lands where the owner is and the manager's default reply
+  // routing points back at the owner. Otherwise fall back to the agent-shared
+  // session (the original behaviour for ordinary agent-to-agent traffic).
+  let targetSession: Session;
+  if (targetGroup.console_messaging_group_id) {
+    const consoleMgId = targetGroup.console_messaging_group_id;
+    const wiring = getMessagingGroupAgentByPair(consoleMgId, targetAgentGroupId);
+    const mode = (wiring?.session_mode as 'shared' | 'per-thread' | 'agent-shared') ?? 'shared';
+    targetSession = resolveSession(targetAgentGroupId, consoleMgId, null, mode).session;
+  } else {
+    targetSession = resolveSession(targetAgentGroupId, null, null, 'agent-shared').session;
+  }
   const a2aMsgId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   // If the source message references files (via `send_file`), forward the

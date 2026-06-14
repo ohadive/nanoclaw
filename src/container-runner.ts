@@ -29,6 +29,7 @@ import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
+import { readEnvFile } from './env.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -117,6 +118,15 @@ async function spawnContainer(session: Session): Promise<void> {
   if (hasTable(getDb(), 'agent_destinations')) {
     const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
     writeDestinations(agentGroup.id, session.id);
+  }
+  // Project the agent roster into the manager's inbound.db so its list_agents
+  // tool can read a local snapshot. Manager-only — spokes skip the cost.
+  {
+    const { isManagerName } = await import('./modules/agent-control/manager.js');
+    if (isManagerName(agentGroup.name)) {
+      const { writeAgentRoster } = await import('./modules/agent-control/write-roster.js');
+      writeAgentRoster(agentGroup.id, session.id);
+    }
   }
   writeSessionRouting(agentGroup.id, session.id);
 
@@ -347,19 +357,6 @@ function buildMounts(
   fs.mkdirSync(fameclawDir, { recursive: true });
   mounts.push({ hostPath: fameclawDir, containerPath: '/home/node/.config/fameclaw', readonly: false });
 
-  // mnemon — per-group memory store (RW). Path-mirrored to host so the user
-  // can inspect or back up via ~/.mnemon/data/<folder>/.
-  const groupMnemonDir = path.join(homeDir, '.mnemon', 'data', agentGroup.folder);
-  fs.mkdirSync(groupMnemonDir, { recursive: true });
-  mounts.push({ hostPath: groupMnemonDir, containerPath: '/home/node/.mnemon/data/default', readonly: false });
-
-  // mnemon — global shared memory (RO). Optional; only mounted if the user
-  // has populated ~/.mnemon/data/global/ with cross-group knowledge.
-  const globalMnemonDir = path.join(homeDir, '.mnemon', 'data', 'global');
-  if (fs.existsSync(globalMnemonDir)) {
-    mounts.push({ hostPath: globalMnemonDir, containerPath: '/home/node/.mnemon/data/global', readonly: true });
-  }
-
   // Additional mounts from container config
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);
@@ -479,9 +476,23 @@ async function buildContainerArgs(
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Pass channel credentials so the agent can call platform APIs directly.
+  const channelEnv = readEnvFile(['SLACK_BOT_TOKEN']);
+  if (channelEnv.SLACK_BOT_TOKEN) {
+    args.push('-e', `SLACK_BOT_TOKEN=${channelEnv.SLACK_BOT_TOKEN}`);
+  }
+
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
+  // Per-group env from container.json (e.g. skill-specific tokens).
+  // Note: groups/ is gitignored, so secrets here don't reach the repo.
+  if (containerConfig.env) {
+    for (const [key, value] of Object.entries(containerConfig.env)) {
       args.push('-e', `${key}=${value}`);
     }
   }

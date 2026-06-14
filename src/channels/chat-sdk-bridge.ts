@@ -45,6 +45,19 @@ export interface ReplyContext {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ReplyContextExtractor = (raw: Record<string, any>) => ReplyContext | null;
 
+/**
+ * Complete a thread id the adapter left "open". Slack emits thread ids of the
+ * form `<channel>:<thread_ts>`; for a top-level message not yet in a thread,
+ * thread_ts is empty, leaving a trailing ':'. Routing then has no thread to
+ * anchor a reply on, so the agent's response posts unthreaded (or fails to
+ * thread under the triggering message). Anchor it on that message's own id
+ * (for Slack, the message ts) so the reply threads under it. Well-formed
+ * thread ids are returned unchanged.
+ */
+export function anchorOpenThreadId(threadId: string, messageId: string | undefined): string {
+  return threadId.endsWith(':') && messageId ? threadId + messageId : threadId;
+}
+
 export interface ChatSdkBridgeConfig {
   adapter: Adapter;
   concurrency?: ConcurrencyStrategy;
@@ -224,7 +237,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         const channelId = adapter.channelIdFromThreadId(thread.id);
         await setupConfig.onInbound(
           channelId,
-          thread.id,
+          anchorOpenThreadId(thread.id, message.id),
           await messageToInbound(message, message.isMention === true, true),
         );
       });
@@ -232,7 +245,11 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // @mention in an unsubscribed thread — SDK-confirmed bot mention.
       chat.onNewMention(async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true, true));
+        await setupConfig.onInbound(
+          channelId,
+          anchorOpenThreadId(thread.id, message.id),
+          await messageToInbound(message, true, true),
+        );
       });
 
       // DMs — by definition addressed to the bot. Thread id flows through
@@ -247,7 +264,11 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           sender: (message.author as any)?.fullName ?? (message.author as any)?.userId ?? 'unknown',
           threadId: thread.id,
         });
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true, false));
+        await setupConfig.onInbound(
+          channelId,
+          anchorOpenThreadId(thread.id, message.id),
+          await messageToInbound(message, true, false),
+        );
       });
 
       // Plain messages in unsubscribed threads.
@@ -262,7 +283,11 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // flood gate.
       chat.onNewMessage(/[\s\S]*/, async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false, true));
+        await setupConfig.onInbound(
+          channelId,
+          anchorOpenThreadId(thread.id, message.id),
+          await messageToInbound(message, false, true),
+        );
       });
 
       // Handle button clicks (ask_user_question)
@@ -382,15 +407,16 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           title,
           children: [
             CardText(question),
-            Actions(
-              // Encode button id/value with the option index rather than the
-              // full value. Telegram caps callback_data at 64 bytes, and
-              // long values (e.g. ISO datetimes, URLs) push the JSON payload
-              // well past that. The onAction handlers resolve the index back
-              // to the real value via getAskQuestionRender(questionId).
-              options.map((opt, idx) =>
-                Button({ id: `ncq:${questionId}:${idx}`, label: opt.label, value: String(idx) }),
-              ),
+            // Each button in its own Actions wrapper so platforms that render
+            // actions as rows (e.g. Telegram inline keyboard) place each
+            // option on its own line instead of squeezing them into one row.
+            // Encode button id/value with the option index rather than the
+            // full value. Telegram caps callback_data at 64 bytes, and
+            // long values (e.g. ISO datetimes, URLs) push the JSON payload
+            // well past that. The onAction handlers resolve the index back
+            // to the real value via getAskQuestionRender(questionId).
+            ...options.map((opt, idx) =>
+              Actions([Button({ id: `ncq:${questionId}:${idx}`, label: opt.label, value: String(idx) })]),
             ),
           ],
         });

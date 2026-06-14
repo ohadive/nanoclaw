@@ -172,10 +172,27 @@ export function writeSessionRouting(agentGroupId: string, sessionId: string): vo
 
   const db = openInboundDb(agentGroupId, sessionId);
   try {
+    // For sessions that don't pin a thread (e.g. DM sessions in `shared`
+    // mode, which collapse all sub-threads into one session), fall back to
+    // the most recent inbound thread_id so MCP send_message replies land
+    // in the thread the user just wrote in instead of going top-level.
+    // dispatchResultText already does this via extractRouting(); this
+    // brings the MCP tool path in line.
+    let threadId = session.thread_id;
+    if (!threadId && platformId) {
+      const row = db
+        .prepare(
+          `SELECT thread_id FROM messages_in
+           WHERE platform_id = ? AND thread_id IS NOT NULL AND thread_id != ''
+           ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(platformId) as { thread_id: string } | undefined;
+      if (row?.thread_id) threadId = row.thread_id;
+    }
     upsertSessionRouting(db, {
       channel_type: channelType,
       platform_id: platformId,
-      thread_id: session.thread_id,
+      thread_id: threadId,
     });
   } finally {
     db.close();

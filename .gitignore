@@ -44,3 +44,21 @@ groups/*
 .claude/logs/
 
 agents-sdk-docs
+
+# Frozen pre-Jun-11 legacy workspace tree (kept as local backup, do not anchor to it)
+/_legacy-NanoClaw-backup-*/
+
+# Python bytecode cache (from container content skills)
+__pycache__/
+*.pyc
+
+# Personal content skills: installation-specific, mounted into containers at
+# runtime, and version-controlled separately under ~/Projects/Content. Not part
+# of the nanoclaw repo (and carry large binary assets that would bloat history).
+/container/skills/ai-slop-detector/
+/container/skills/content-editor/
+/container/skills/direct-response-copy/
+/container/skills/email-marketing-bible/
+/container/skills/last30days/
+/container/skills/newsletter/
+/container/skills/substack-writer/

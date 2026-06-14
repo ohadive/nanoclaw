@@ -23,7 +23,6 @@ ARG CLAUDE_CODE_VERSION=2.1.116
 ARG AGENT_BROWSER_VERSION=latest
 ARG VERCEL_VERSION=52.2.1
 ARG BUN_VERSION=1.3.12
-ARG MNEMON_VERSION=0.1.3
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -60,6 +59,29 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# ---- gh CLI (GitHub source for last30days, manual use) ----------------------
+# Not in Bookworm apt repos; install from GitHub's official apt repo.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | install -m 0644 /dev/stdin /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Python 3.12 + yt-dlp ----------------------------------------------------
+# Bookworm only ships python3.11; last30days and similar skills require 3.12+.
+# Install via uv (Astral's standalone Python builds — no compilation, no PPA).
+# yt-dlp is the YouTube source for last30days.
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh && \
+    uv python install 3.12 && \
+    ln -sf "$(uv python find 3.12)" /usr/local/bin/python3.12 && \
+    uv tool install --python 3.12 yt-dlp && \
+    chmod -R a+rX /opt/python /opt/uv-tools
+
 # Chromium path for agent-browser / Playwright consumers
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
@@ -73,14 +95,6 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" && \
     install -m 0755 /root/.bun/bin/bun /usr/local/bin/bun && \
     rm -rf /root/.bun
-
-# ---- mnemon (persistent agent memory) ----------------------------------------
-# Go binary downloaded from GitHub releases. Multi-arch: dpkg arch maps directly
-# to mnemon's amd64 / arm64 release artifacts.
-RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://github.com/mnemon-dev/mnemon/releases/download/v${MNEMON_VERSION}/mnemon_${MNEMON_VERSION}_linux_${ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin mnemon && \
-    chmod +x /usr/local/bin/mnemon
 
 # ---- agent-runner deps -------------------------------------------------------
 # Deps are cached independently of CLI versions. Source is NOT baked in —
@@ -102,7 +116,9 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 #     binary (linux-arm64 variant on our image). Without the allowlist
 #     the SDK fails at spawn time with "native binary not found".
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+# pnpm ≥11 puts the global bin at $PNPM_HOME/bin (older versions used $PNPM_HOME
+# directly). Include both so this survives a pnpm major bump in either direction.
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 RUN corepack enable
 
 RUN --mount=type=cache,target=/root/.cache/pnpm \
@@ -114,15 +130,17 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install -g "agent-browser@${AGENT_BROWSER_VERSION}"
 
 RUN --mount=type=cache,target=/root/.cache/pnpm \
-    pnpm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    pnpm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
+    node "$(find /pnpm/store -path '*@anthropic-ai/claude-code/install.cjs' | head -1)"
+# ^^ pnpm 11 doesn't auto-link platform-specific optionalDependencies for
+# global installs. claude-code's install.cjs copies the matching
+# claude-code-<platform> native binary over bin/claude.exe. `pnpm root -g`
+# returns /pnpm/global/v11 but actual modules are under a hashed subdir, so
+# we resolve via the store path directly.
 
 # ---- Entrypoint --------------------------------------------------------------
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
-
-# ---- mnemon hooks ------------------------------------------------------------
-COPY hooks/mnemon/ /app/hooks/mnemon/
-RUN chmod +x /app/hooks/mnemon/*.sh
 
 # ---- Workspace + permissions -------------------------------------------------
 RUN mkdir -p /workspace/group /workspace/extra && \

@@ -6,6 +6,25 @@ export interface AgentGroup {
   folder: string;
   agent_provider: string | null;
   created_at: string;
+  /**
+   * ISO timestamp when this group was paused, or null when active. Set by
+   * `pauseAgentGroup()`. When non-null, host-sweep skips scheduled wake paths
+   * (recurrence fanout) for this group; interactive inbound messages still
+   * wake the container normally. See migration 014.
+   *
+   * Optional on the TS type so pre-migration-014 fixtures don't need to
+   * update; the column defaults to NULL in SQLite.
+   */
+  paused_at?: string | null;
+  paused_reason?: string | null;
+  /**
+   * For the orchestration manager: the messaging group whose session is this
+   * agent's "console" — where the owner talks to it and where spoke agents'
+   * replies are delivered. When set, `routeAgentMessage` delivers inter-agent
+   * messages here instead of the ambiguous `agent-shared` session. NULL = old
+   * behaviour (agent-shared). See migration 015.
+   */
+  console_messaging_group_id?: string | null;
 }
 
 export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';

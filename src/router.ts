@@ -29,7 +29,7 @@ import {
 import { findSessionForAgent } from './db/sessions.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
-import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
+import { resolveSession, writeSessionMessage, writeOutboundDirect, writeSessionRouting } from './session-manager.js';
 import { wakeContainer } from './container-runner.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
@@ -457,6 +457,13 @@ async function deliverToAgent(
     content: event.message.content,
     trigger: wake ? 1 : 0,
   });
+
+  // Refresh session_routing so MCP send_message defaults to the thread the
+  // user just wrote in. spawnContainer also calls this on cold wake; doing
+  // it here covers the hot-container case where the agent is already
+  // running and the user sends a new top-level message in a different
+  // thread. Cheap — one upsert into inbound.db.
+  writeSessionRouting(session.agent_group_id, session.id);
 
   log.info('Message routed', {
     sessionId: session.id,

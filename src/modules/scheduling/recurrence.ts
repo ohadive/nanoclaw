@@ -14,11 +14,19 @@
 import type Database from 'better-sqlite3';
 
 import { TIMEZONE } from '../../config.js';
+import { getAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
 import { clearRecurrence, getCompletedRecurring, insertRecurrence } from './db.js';
 
 export async function handleRecurrence(inDb: Database.Database, session: Session): Promise<void> {
+  // Skip recurrence fanout while the group is paused. The completed-recurring
+  // row keeps its `recurrence` field intact so the next sweep tick after
+  // resume re-attempts to compute the next run from the cron expression at
+  // that point. Interactive inbound messages bypass this path entirely.
+  const group = getAgentGroup(session.agent_group_id);
+  if (group?.paused_at) return;
+
   const recurring = getCompletedRecurring(inDb);
 
   for (const msg of recurring) {
