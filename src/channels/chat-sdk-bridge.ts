@@ -195,6 +195,17 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
     channelType: adapter.name,
     supportsThreads: config.supportsThreads,
 
+    async react(platformId: string, threadId: string | null, messageId: string, emoji: string) {
+      // Mirror the deliver/edit path: the Chat SDK keys reactions on the
+      // conversation id (thread when present, else the channel).
+      const tid = threadId ?? platformId;
+      try {
+        await adapter.addReaction(tid, messageId, emoji);
+      } catch (err) {
+        log.debug('Failed to add reaction', { channelType: adapter.name, err });
+      }
+    },
+
     async setup(hostConfig: ChannelSetup) {
       setupConfig = hostConfig;
 

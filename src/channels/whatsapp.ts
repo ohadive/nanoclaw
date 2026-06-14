@@ -899,6 +899,22 @@ registerChannelAdapter('whatsapp', {
         }
       },
 
+      async react(platformId: string, _threadId: string | null, messageId: string, emoji: string) {
+        // The host passes shortcode names; baileys wants the literal glyph.
+        const glyph =
+          ({ eyes: '👀', white_check_mark: '✅', thumbs_up: '👍' } as Record<string, string>)[emoji] ?? emoji;
+        try {
+          await sock.sendMessage(platformId, {
+            react: {
+              text: glyph,
+              key: { remoteJid: platformId, id: messageId, fromMe: false },
+            },
+          });
+        } catch (err) {
+          log.debug('Failed to add reaction', { platformId, err });
+        }
+      },
+
       async teardown() {
         shuttingDown = true;
         connected = false;
