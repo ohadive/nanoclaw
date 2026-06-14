@@ -328,6 +328,16 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
     }
   }
 
+  // Acknowledge receipt with a reaction the moment at least one agent
+  // engages — immediate "got it" feedback before the agent composes a reply.
+  // One reaction per inbound (not per agent), on the sender's own message.
+  // Fire-and-forget; never blocks routing. Adapters without react() no-op.
+  if (engagedCount > 0 && adapter?.react && event.message.id) {
+    void adapter.react(event.platformId, event.threadId, event.message.id, 'eyes').catch((err) => {
+      log.debug('Failed to ack inbound with reaction', { channelType: event.channelType, err });
+    });
+  }
+
   if (engagedCount + accumulatedCount === 0) {
     recordDroppedMessage({
       channel_type: event.channelType,
