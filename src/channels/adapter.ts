@@ -225,6 +225,17 @@ export interface ChannelAdapter {
     status?: string,
     statusKind?: 'auto' | 'agent',
   ): Promise<void>;
+
+  /**
+   * Add an emoji reaction to a specific inbound message. Used by the host to
+   * acknowledge receipt ("seen") the moment a message engages an agent, before
+   * the agent has produced a reply. `emoji` is a shortcode name (e.g. 'eyes',
+   * 'white_check_mark') matching the add_reaction MCP tool convention; native
+   * adapters map it to their platform's format. Platforms without reaction
+   * support omit this; the router treats absence as a no-op.
+   */
+  react?(platformId: string, threadId: string | null, messageId: string, emoji: string): Promise<void>;
+
   syncConversations?(): Promise<ConversationInfo[]>;
   resolveChannelName?(platformId: string): Promise<string | null>;
 
