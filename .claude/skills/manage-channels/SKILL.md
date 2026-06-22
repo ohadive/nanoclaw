@@ -63,6 +63,8 @@ The `register` step creates the agent group (reusing it if the folder already ex
 
 For separate agents, also ask for a folder name and optionally a different assistant name.
 
+**Gotcha — `register` overwrites global `.env ASSISTANT_NAME`.** The `--assistant-name` flag blindly rewrites `ASSISTANT_NAME` in `.env` (`setup/register.ts`), which is the host's `DEFAULT_TRIGGER` (`@<name>`) and the WhatsApp mention/prefix identity for the **primary/hub agent**. The per-agent name is stored correctly in `agent_groups.name`, so when wiring a **non-primary** agent, restore the global afterward: `sed -i '' 's/^ASSISTANT_NAME=.*/ASSISTANT_NAME="<hub-agent-name>"/' .env`. No host restart is needed for new wiring to take effect — the router resolves channel→agent per-message via a DB lookup. Run `register` under the repo's pinned Node (`fnm use 22`) or the better-sqlite3 binding throws a NODE_MODULE_VERSION mismatch.
+
 ## Add Channel Group
 
 When adding another group/chat on an already-configured platform (e.g. a second Telegram group):
