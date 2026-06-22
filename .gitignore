@@ -44,6 +44,13 @@ groups/*
 .claude/logs/
 
 agents-sdk-docs
+.agents
+AGENTS.md
+
+# Internal working docs, never committed
+docs/maintainer-guide.md
+docs/drafts/
+forks.md
 
 # Frozen pre-Jun-11 legacy workspace tree (kept as local backup, do not anchor to it)
 /_legacy-NanoClaw-backup-*/

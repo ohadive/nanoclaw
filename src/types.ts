@@ -4,15 +4,16 @@ export interface AgentGroup {
   id: string;
   name: string;
   folder: string;
+  /** @deprecated Use container_configs.provider instead. */
   agent_provider: string | null;
   created_at: string;
   /**
    * ISO timestamp when this group was paused, or null when active. Set by
    * `pauseAgentGroup()`. When non-null, host-sweep skips scheduled wake paths
    * (recurrence fanout) for this group; interactive inbound messages still
-   * wake the container normally. See migration 014.
+   * wake the container normally. See migration 019 (fork; was 014 pre-merge).
    *
-   * Optional on the TS type so pre-migration-014 fixtures don't need to
+   * Optional on the TS type so pre-migration fixtures don't need to
    * update; the column defaults to NULL in SQLite.
    */
   paused_at?: string | null;
@@ -22,9 +23,30 @@ export interface AgentGroup {
    * agent's "console" — where the owner talks to it and where spoke agents'
    * replies are delivered. When set, `routeAgentMessage` delivers inter-agent
    * messages here instead of the ambiguous `agent-shared` session. NULL = old
-   * behaviour (agent-shared). See migration 015.
+   * behaviour (agent-shared). See migration 020 (fork; was 015 pre-merge).
    */
   console_messaging_group_id?: string | null;
+}
+
+/** Per-agent-group container runtime config. Source of truth in the DB;
+ *  materialized to `groups/<folder>/container.json` at spawn time. */
+export interface ContainerConfigRow {
+  agent_group_id: string;
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+  image_tag: string | null;
+  assistant_name: string | null;
+  max_messages_per_prompt: number | null;
+  skills: string; // JSON: '"all"' | '["skill1","skill2"]'
+  mcp_servers: string; // JSON: Record<string, McpServerConfig>
+  packages_apt: string; // JSON: string[]
+  packages_npm: string; // JSON: string[]
+  additional_mounts: string; // JSON: AdditionalMountConfig[]
+  cli_scope: string; // 'disabled' | 'group' | 'global'
+  env: string | null; // JSON: Record<string,string> — per-group container env (skill tokens)
+  disallowed_tools: string | null; // JSON: string[] — per-group SDK tool blocklist
+  updated_at: string;
 }
 
 export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';
@@ -33,6 +55,14 @@ export interface MessagingGroup {
   id: string;
   channel_type: string;
   platform_id: string;
+  /**
+   * Adapter-instance name. Defaults to channel_type (the "default instance").
+   * Column is NOT NULL (migration 016 backfills instance = channel_type);
+   * optional on the TS type per the denied_at convention so fixtures that
+   * build MessagingGroup objects don't need updating — createMessagingGroup
+   * stamps the default.
+   */
+  instance?: string;
   name: string | null;
   is_group: number; // 0 | 1
   unknown_sender_policy: UnknownSenderPolicy;
@@ -195,6 +225,8 @@ export interface PendingApproval {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   title: string;
   options_json: string;
+  /** When set, only this exact user may resolve the approval. */
+  approver_user_id: string | null;
 }
 
 // ── Agent destinations (central DB) ──
@@ -204,5 +236,12 @@ export interface AgentDestination {
   local_name: string;
   target_type: 'channel' | 'agent';
   target_id: string;
+  created_at: string;
+}
+
+export interface AgentMessagePolicy {
+  from_agent_group_id: string;
+  to_agent_group_id: string;
+  approver: string;
   created_at: string;
 }

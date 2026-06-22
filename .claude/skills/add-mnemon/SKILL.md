@@ -1,81 +1,177 @@
 ---
 name: add-mnemon
-description: Add persistent graph-based memory to NanoClaw agents using mnemon. Agents recall context before responding and remember insights after. Each group gets isolated memory with optional global shared store.
+description: Add persistent graph-based memory via mnemon. Agents recall past context before responding and remember insights after each turn.
 ---
 
-# /add-mnemon
+# Add Mnemon — Persistent Memory
 
-Adds [mnemon](https://github.com/mnemon-dev/mnemon) persistent memory to a NanoClaw install. After this skill runs, every new agent session gets per-group memory mounted at `/home/node/.mnemon/data/default` and (optionally) a read-only global memory at `/home/node/.mnemon/data/global`.
+Installs [mnemon](https://github.com/mnemon-dev/mnemon) in the agent container image. On each container start, `mnemon setup` registers Claude Code hooks that surface relevant memory before the agent responds and store new insights after each turn. Memory is written to the per-agent-group `.claude/` mount and survives container restarts.
 
-This skill is idempotent — re-running on an already-integrated install is a no-op. The wiring is also already present in this repo (this is the documentation/discovery file). The actual integration lives in:
+## Provider Compatibility
 
-- `container/Dockerfile` — installs the mnemon binary and copies hook scripts
-- `container/skills/mnemon/SKILL.md` — container-side skill teaching the agent how to use mnemon
-- `container/hooks/mnemon/{prime,user_prompt,stop,compact}.sh` — lifecycle hooks
-- `src/container-runner.ts` — per-group + global volume mounts
-- `src/group-init.ts` — idempotent registration of mnemon hooks in each group's settings.json
+mnemon hooks fire only under `--target claude-code`. Use this skill on agent groups that run the default Claude provider (`AGENT_PROVIDER=claude`). Confirm the provider before applying:
 
-## Architecture
-
-```
-Host                              Container
-~/.mnemon/data/{group.folder}/ ──rw──→ /home/node/.mnemon/data/default  (private)
-~/.mnemon/data/global/         ──ro──→ /home/node/.mnemon/data/global   (shared, optional)
+```bash
+grep AGENT_PROVIDER .env groups/*/container.json 2>/dev/null
 ```
 
-Each agent group gets its own isolated mnemon store, named after `group.folder`. The global store is mounted only if `~/.mnemon/data/global/` exists on the host.
+If a group uses a different provider (e.g. `AGENT_PROVIDER=opencode`), it spawns its own process and never invokes the `claude` CLI, so the hooks registered by `mnemon setup` do not run for that group.
 
-## Pre-flight
+## Phase 1: Pre-flight
 
-1. Verify mnemon is installed on the host:
-   ```bash
-   mnemon --version
-   ```
-   If not installed:
-   - macOS / Linux (Homebrew): `brew install mnemon-dev/tap/mnemon`
-   - Go install: `go install github.com/mnemon-dev/mnemon@latest`
+### Check if already applied
 
-   Note: do NOT run `mnemon setup` on the host. That installs host-side hooks/skills and would conflict with claude-mem if you also use it. The host binary is only needed so other tools / introspection commands can read `~/.mnemon/data/`.
+```bash
+grep -q 'MNEMON_VERSION' container/Dockerfile && echo "Already applied" || echo "Not applied"
+```
 
-2. Pin the version in `container/Dockerfile`. Get the latest:
-   ```bash
-   curl -s https://api.github.com/repos/mnemon-dev/mnemon/releases/latest \
-     | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4 | sed 's/^v//'
-   ```
-   Update `ARG MNEMON_VERSION=...` in `container/Dockerfile` if it has drifted.
+If already applied, re-run Phase 2 anyway — every step is idempotent and skips work that is already in place — then continue to Phase 3 (Verify).
 
-## Activation
+### Check latest mnemon version
 
-After the wiring is in place (it already is in this repo), build the agent image and restart the host:
+```bash
+curl -fsSL https://api.github.com/repos/mnemon-dev/mnemon/releases/latest | grep '"tag_name"'
+```
+
+Note the version (e.g. `v0.1.1`) — use it as `MNEMON_VERSION` in the next step.
+
+## Phase 2: Apply Changes
+
+### 1. Dockerfile — install mnemon binary
+
+Insert the mnemon block immediately above the `# ---- Bun runtime` section of `container/Dockerfile` (skip if `grep -q 'MNEMON_VERSION' container/Dockerfile` already matches):
+
+```dockerfile
+# ---- mnemon — persistent agent memory ----------------------------------------
+ARG MNEMON_VERSION=0.1.1
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://github.com/mnemon-dev/mnemon/releases/download/v${MNEMON_VERSION}/mnemon_${MNEMON_VERSION}_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin mnemon && \
+    chmod +x /usr/local/bin/mnemon
+
+ENV MNEMON_DATA_DIR=/home/node/.claude/mnemon
+```
+
+`MNEMON_DATA_DIR` points into the per-agent-group `.claude/` mount, so memory persists across container restarts.
+
+### 2. Entrypoint — run mnemon setup on each container start
+
+`mnemon setup` is idempotent. Run it once per `container/entrypoint.sh`. First check whether the line is already present:
+
+```bash
+grep -q 'mnemon setup' container/entrypoint.sh && echo "Already wired" || echo "Wire it"
+```
+
+If it prints `Wire it`, add the setup call right after `set -e`, before the `cat` that captures stdin, so the result looks like:
+
+```bash
+#!/bin/bash
+# NanoClaw agent container entrypoint.
+#
+# ...existing header comment...
+
+set -e
+
+mnemon setup --target claude-code --yes --global >/dev/stderr 2>&1
+
+cat > /tmp/input.json
+
+exec bun run /app/src/index.ts < /tmp/input.json
+```
+
+`>/dev/stderr 2>&1` routes all mnemon output to stderr (docker logs) so it doesn't interfere with the JSON stdin handshake between host and agent-runner.
+
+### 3. Copy the integration tests
+
+Both reach-ins are into container build/runtime files that aren't importable or typed (a GitHub-release binary in the Dockerfile, a shell line in the entrypoint), so structural tests guard them. Copy them into the host test tree:
+
+```bash
+cp .claude/skills/add-mnemon/mnemon-dockerfile.test.ts src/mnemon-dockerfile.test.ts
+cp .claude/skills/add-mnemon/mnemon-entrypoint.test.ts src/mnemon-entrypoint.test.ts
+pnpm exec vitest run src/mnemon-dockerfile.test.ts src/mnemon-entrypoint.test.ts
+```
+
+`mnemon-dockerfile.test.ts` asserts the `MNEMON_VERSION` ARG and `MNEMON_DATA_DIR` ENV are present (red if the install layer is dropped on an upgrade). `mnemon-entrypoint.test.ts` asserts the entrypoint invokes `mnemon setup --target claude-code` (red if the wiring is removed).
+
+### 4. Rebuild and smoke-test the image
 
 ```bash
 ./container/build.sh
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
-# systemctl --user restart nanoclaw                # Linux
+docker run --rm --entrypoint mnemon nanoclaw-agent:latest --version
 ```
 
-The next agent session in any group will:
-1. Find the mnemon binary at `/usr/local/bin/mnemon`
-2. Auto-create `~/.mnemon/data/{group.folder}/` on the host (mkdirSync at spawn time)
-3. Fire the four mnemon hooks (Prime / UserPromptSubmit / Stop / PreCompact)
-4. Load the container-side `mnemon` skill teaching recall/remember/link
+## Phase 3: Restart and Verify
 
-## Coexistence with claude-mem and CLAUDE.local.md
+### Restart the service
 
-- **Host (your Mac):** claude-mem keeps capturing CLI sessions; mnemon binary is present but no host hooks fire.
-- **Inside containers:** mnemon is the durable graph memory; `CLAUDE.local.md` and `conversations/` remain for top-of-context preferences and chronological transcripts. The container skill explains when to use which.
+Run from your NanoClaw project root:
 
-## Uninstall
+```bash
+source setup/lib/install-slug.sh
+systemctl --user restart $(systemd_unit)              # Linux
+# launchctl kickstart -k gui/$(id -u)/$(launchd_label)   # macOS
+```
 
-To remove mnemon from this install:
+### Confirm mnemon hooks are registered
 
-1. Revert the changes in `container/Dockerfile`, `src/container-runner.ts`, and `src/group-init.ts`.
-2. Delete `container/hooks/mnemon/` and `container/skills/mnemon/`.
-3. Strip mnemon hooks from each group's settings.json:
-   ```bash
-   for f in data/v2-sessions/*/.claude-shared/settings.json; do
-     jq 'del(.hooks.SessionStart, .hooks.UserPromptSubmit, .hooks.Stop, .hooks.PreCompact) | if .hooks == {} then del(.hooks) else . end' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-   done
-   ```
-4. (Optional) `rm -rf ~/.mnemon/` to delete all stored memory.
-5. Rebuild: `./container/build.sh`
+After the next container starts, check that setup ran:
+
+```bash
+docker logs $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) 2>&1 | grep -i mnemon
+```
+
+Then inspect the hooks inside the running container:
+
+```bash
+docker exec $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) \
+  cat /home/node/.claude/settings.json | grep -A5 mnemon
+```
+
+### Test memory recall
+
+Have a conversation with the agent, then start a new session and reference something from the earlier one. Mnemon should surface the relevant context automatically without you restating it.
+
+## Memory Storage
+
+Mnemon writes to `/home/node/.claude/mnemon/` inside the container, which maps to the per-agent-group `.claude/` directory on the host. To find the exact host path:
+
+```bash
+docker inspect $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) \
+  --format '{{range .Mounts}}{{if eq .Destination "/home/node/.claude"}}{{.Source}}{{end}}{{end}}'
+```
+
+To reset all memory for an agent, stop the container and delete the `mnemon/` subdirectory from that host path.
+
+## Troubleshooting
+
+### `mnemon: command not found` in container
+
+The image wasn't rebuilt after adding the Dockerfile layer. Run `./container/build.sh` and restart.
+
+### Memory not persisting across restarts
+
+Verify `MNEMON_DATA_DIR` resolves to a mounted path (not an in-container ephemeral directory):
+
+```bash
+docker exec <container> sh -c 'ls -la $MNEMON_DATA_DIR'
+```
+
+If the directory is empty after conversations, the mount is missing or the path is wrong. Check the host mount with the `docker inspect` command above.
+
+### Agent not using past memory
+
+`mnemon setup` writes hooks into `/home/node/.claude/settings.json`. Verify:
+
+```bash
+docker exec <container> cat /home/node/.claude/settings.json
+```
+
+If the hooks are absent, `mnemon setup` may have failed silently. Check container startup logs for errors from mnemon.
+
+### Setup fails at container start
+
+Run setup manually inside a running container to see the full error:
+
+```bash
+docker exec -it <container> mnemon setup --target claude-code --yes --global
+```

@@ -5,12 +5,11 @@
  * send_message(to="agent-name") since agents and channels share the
  * unified destinations namespace.
  *
- * NOTE: there is no per-agent tool gating today — mcp-tools/index.ts imports
- * every tool module unconditionally, so create_agent is exposed to all agents
- * and the host handler (src/modules/agent-to-agent/create-agent.ts) applies it
- * without an admin check. The only manager-gated tools are in orchestration.ts,
- * which self-gates on groupName AND is re-checked host-side. If create_agent
- * needs gating, follow that pattern.
+ * create_agent writes central-DB state. The host authorizes it by CLI scope:
+ * trusted owner agent groups (scope 'global') create directly; confined groups
+ * require admin approval (see src/modules/agent-to-agent/create-agent.ts). This
+ * tool just writes the outbound request; authorization is enforced host-side,
+ * not here — the container is untrusted and cannot be relied on to gate itself.
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
@@ -36,7 +35,7 @@ export const createAgent: McpToolDefinition = {
   tool: {
     name: 'create_agent',
     description:
-      'Create a long-lived companion sub-agent (research assistant, task manager, specialist) — the name becomes your destination for it. Admin-only. Fire-and-forget.',
+      'Create a long-lived companion sub-agent (research assistant, task manager, specialist) — the name becomes your destination for it. May require admin approval before the agent is created. Fire-and-forget.',
     inputSchema: {
       type: 'object' as const,
       properties: {

@@ -18,6 +18,8 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   /** Per-group tool blocklist appended to SDK_DISALLOWED_TOOLS in claude.ts. */
   disallowedTools: string[];
+  model?: string;
+  effort?: string;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -46,6 +48,8 @@ export function loadConfig(): RunnerConfig {
     maxMessagesPerPrompt: (raw.maxMessagesPerPrompt as number) || DEFAULT_MAX_MESSAGES,
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     disallowedTools: (raw.disallowedTools as string[]) || [],
+    model: (raw.model as string) || undefined,
+    effort: (raw.effort as string) || undefined,
   };
 
   return _config;

@@ -1,26 +1,25 @@
 /**
- * Per-group container config, stored as a plain JSON file at
- * `groups/<folder>/container.json`. Mounted read-only inside the container
- * at `/workspace/agent/container.json` — the runner reads it at startup but
- * cannot modify it. Config changes go through the self-mod approval flow.
+ * Container config types and materialization.
  *
- * All fields are optional — a missing file or a partial file both resolve
- * to sensible defaults. Writes are atomic-enough (write-then-rename is not
- * worth the ceremony here since there's only one writer in practice: the
- * host, from the delivery thread that processes approved system actions).
+ * Source of truth is the `container_configs` table in the central DB.
+ * This module provides:
+ *   - Type definitions for the file shape (read by the container runner)
+ *   - `materializeContainerJson()` — writes `groups/<folder>/container.json`
+ *     from the DB at spawn time
+ *   - `configFromDb()` — builds a `ContainerConfig` from a DB row + agent group
  */
 import fs from 'fs';
 import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
+import { getContainerConfig } from './db/container-configs.js';
+import { getAgentGroup } from './db/agent-groups.js';
+import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
-  // Optional always-in-context guidance. When set, the host writes the
-  // content to `.claude-fragments/mcp-<name>.md` at spawn and imports it
-  // into the composed CLAUDE.md.
   instructions?: string;
 }
 
@@ -30,23 +29,20 @@ export interface AdditionalMountConfig {
   readonly?: boolean;
 }
 
+/** Shape of the materialized `container.json` file read by the container runner. */
 export interface ContainerConfig {
   mcpServers: Record<string, McpServerConfig>;
   packages: { apt: string[]; npm: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
-  /** Which skills to enable — array of skill names or "all" (default). */
   skills: string[] | 'all';
-  /** Agent provider name (e.g. "claude", "opencode"). Default: "claude". */
   provider?: string;
-  /** Agent group display name (used in transcript archiving). */
   groupName?: string;
-  /** Assistant display name (used in system prompt / responses). */
   assistantName?: string;
-  /** Agent group ID — set by the host, read by the runner. */
   agentGroupId?: string;
-  /** Max messages per prompt. Falls back to code default if unset. */
   maxMessagesPerPrompt?: number;
+  model?: string;
+  effort?: string;
   /** Per-group env vars passed to the container (e.g. skill tokens). */
   env?: Record<string, string>;
   /** Per-group tool blocklist — appended to the SDK-level disallow list.
@@ -55,120 +51,47 @@ export interface ContainerConfig {
   disallowedTools?: string[];
 }
 
-function emptyConfig(): ContainerConfig {
+/** Build a `ContainerConfig` from a DB row + agent group identity. */
+export function configFromDb(row: ContainerConfigRow, group: AgentGroup): ContainerConfig {
   return {
-    mcpServers: {},
-    packages: { apt: [], npm: [] },
-    additionalMounts: [],
-    skills: 'all',
-  };
-}
-
-function configPath(folder: string): string {
-  return path.join(GROUPS_DIR, folder, 'container.json');
-}
-
-/**
- * Read the container config for a group, returning sensible defaults for
- * any missing fields.
- *
- * A *missing* file resolves to an empty config (a brand-new group). But a
- * file that EXISTS yet fails to parse is treated as corruption and THROWS —
- * it must not silently fall back to empty. Most callers read-modify-write
- * (spawn identity sync, image build, self-mod); if a corrupt read returned
- * an empty config, the subsequent write would persist that empty config and
- * PERMANENTLY destroy the real mounts / MCP servers / packages. Throwing
- * makes the caller abort before writing. The corrupt file is backed up to
- * `container.json.corrupt-<timestamp>` for recovery.
- *
- * `wakeContainer` already swallows spawn errors (host-sweep retries), so a
- * throw here aborts the spawn safely rather than crashing the host. Genuinely
- * read-only callers that can tolerate a missing config should catch and fall
- * back to `emptyConfig()` themselves.
- */
-export function readContainerConfig(folder: string): ContainerConfig {
-  const p = configPath(folder);
-  if (!fs.existsSync(p)) return emptyConfig();
-  let text: string;
-  try {
-    text = fs.readFileSync(p, 'utf8');
-  } catch (err) {
-    // I/O error on an existing file — don't risk a destructive write-back.
-    throw new Error(`[container-config] cannot read ${p}: ${String(err)}`);
-  }
-  let raw: Partial<ContainerConfig>;
-  try {
-    raw = JSON.parse(text) as Partial<ContainerConfig>;
-  } catch (err) {
-    const backup = `${p}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    try {
-      fs.copyFileSync(p, backup);
-    } catch (backupErr) {
-      console.error(`[container-config] failed to back up corrupt ${p}: ${String(backupErr)}`);
-    }
-    console.error(
-      `[container-config] ${p} is not valid JSON (backed up to ${backup}). ` +
-        `Refusing to load defaults — a write-back would erase the real config. ` +
-        `Fix the file and retry. Parse error: ${String(err)}`,
-    );
-    throw new Error(`container.json for "${folder}" is corrupt: ${String(err)}`);
-  }
-  return {
-    mcpServers: raw.mcpServers ?? {},
+    mcpServers: JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>,
     packages: {
-      apt: raw.packages?.apt ?? [],
-      npm: raw.packages?.npm ?? [],
+      apt: JSON.parse(row.packages_apt) as string[],
+      npm: JSON.parse(row.packages_npm) as string[],
     },
-    imageTag: raw.imageTag,
-    additionalMounts: raw.additionalMounts ?? [],
-    skills: raw.skills ?? 'all',
-    provider: raw.provider,
-    groupName: raw.groupName,
-    assistantName: raw.assistantName,
-    agentGroupId: raw.agentGroupId,
-    maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
-    env: raw.env,
-    disallowedTools: raw.disallowedTools,
+    imageTag: row.image_tag ?? undefined,
+    additionalMounts: JSON.parse(row.additional_mounts) as AdditionalMountConfig[],
+    skills: JSON.parse(row.skills) as string[] | 'all',
+    provider: row.provider ?? undefined,
+    groupName: group.name,
+    assistantName: row.assistant_name ?? group.name,
+    agentGroupId: group.id,
+    maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
+    model: row.model ?? undefined,
+    effort: row.effort ?? undefined,
+    env: row.env ? (JSON.parse(row.env) as Record<string, string>) : undefined,
+    disallowedTools: row.disallowed_tools ? (JSON.parse(row.disallowed_tools) as string[]) : undefined,
   };
 }
 
 /**
- * Write the container config for a group, creating the groups/<folder>/
- * directory if necessary. Pretty-printed JSON so diffs in the activation
- * flow are reviewable.
- *
- * Writes atomically (temp file + rename) so a crash or a concurrent reader
- * never observes a half-written, unparseable container.json. A torn write is
- * what produces the corruption that `readContainerConfig` now refuses to load.
+ * Materialize `container.json` from the DB. Called at spawn time so the
+ * container always sees fresh config. Returns the `ContainerConfig` for
+ * use by the caller (buildMounts, buildContainerArgs, etc.).
  */
-export function writeContainerConfig(folder: string, config: ContainerConfig): void {
-  const p = configPath(folder);
+export function materializeContainerJson(agentGroupId: string): ContainerConfig {
+  const group = getAgentGroup(agentGroupId);
+  if (!group) throw new Error(`Agent group not found: ${agentGroupId}`);
+
+  const row = getContainerConfig(agentGroupId);
+  if (!row) throw new Error(`Container config not found for agent group: ${agentGroupId}`);
+
+  const config = configFromDb(row, group);
+
+  const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
-  fs.renameSync(tmp, p);
-}
+  fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
 
-/**
- * Apply a mutator function to a group's container config and persist the
- * result. Convenient for append-style changes like `install_packages` and
- * `add_mcp_server` handlers.
- */
-export function updateContainerConfig(folder: string, mutate: (config: ContainerConfig) => void): ContainerConfig {
-  const config = readContainerConfig(folder);
-  mutate(config);
-  writeContainerConfig(folder, config);
   return config;
-}
-
-/**
- * Initialize an empty container.json for a group if one doesn't already
- * exist. Idempotent — used from `group-init.ts`.
- */
-export function initContainerConfig(folder: string): boolean {
-  const p = configPath(folder);
-  if (fs.existsSync(p)) return false;
-  writeContainerConfig(folder, emptyConfig());
-  return true;
 }
