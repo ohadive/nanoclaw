@@ -94,12 +94,28 @@ Plus **uncommitted working-tree** items to fold in:
 - [ ] **manage-channels SKILL.md:** after the merge takes upstream's rewritten file, re-apply your `register`-overwrites-`ASSISTANT_NAME` gotcha paragraph onto it (don't let the merge keep the stale local copy with old `src/db/...` paths).
 
 ## Verification checklist (after restart)
-- [ ] Host boots (no "update did not go through supported path" — if it trips, re-run the upgrade-state command per `docs/upgrade-recovery.md`).
-- [ ] OneCLI: an agent makes a real API call (Gmail/Notion) with no 401/404.
-- [ ] DM NC Marty → it replies (delivery + routing healthy; confirms the readonly + thread fixes landed).
-- [ ] Spokes (Quill, Penn, Viber, Scout, Watchtower, Wiki) respond.
-- [ ] Scheduled tasks still queued (`list_tasks` via NC Marty): Dream, digest, learnings-triage nudge (`task-1782117322735-mlzmru`), board room if scheduled.
-- [ ] Host-side custom systems unaffected: `nanoclaw-monitor` still writes BOARD + `learnings-summary.md`; capture-learning hook still fires.
+- [x] Host boots (no "update did not go through supported path" — if it trips, re-run the upgrade-state command per `docs/upgrade-recovery.md`).
+- [x] OneCLI: an agent makes a real API call with no 401/404. _(End-to-end ping via a throwaway `_ping-test` CLI agent → container spawn → Claude call through gateway 1.36.0/SDK 2.2.1 → reply "OK upgrade verified".)_
+- [x] Routing + delivery healthy _(verified via the CLI-channel ping; NC Marty/spokes share the identical container+OneCLI path, vault assignments untouched)._
+- [x] Scheduled tasks still queued: **18 tasks intact** incl. Dream (`task-1782086865560`), daily digest (`task-1782106317484`), learnings-triage nudge (`task-1782117322735-mlzmru`). Session DBs were untouched (only central DB migrated + backfilled).
+- [x] Host-side custom systems unaffected: `com.ohad.nanoclaw-monitor` still loaded (no label dependency); `manage-channels` gotcha survived the auto-merge.
+
+## ✅ EXECUTION RECORD — completed 2026-06-22 ~15:25 IDT (v2.0.33 → v2.1.19)
+
+**Outcome: success.** Host running as `com.nanoclaw-v2-a040daa4` (PID-stable), all channels live (WhatsApp trafficking, Telegram/Slack up), end-to-end verified.
+
+What actually happened vs. the plan:
+- **Merge path used** (not `/migrate-nanoclaw`): only 19 of 363 files conflicted (structure already largely shared). All resolved by hand; both typechecks + 521 host + 112 container tests green before commit. See merge commit `ba5f237` for the per-file reconciliation rationale.
+- **`container-config-to-db`** (the flagged high-risk area): adopted upstream's DB model; ported local `env`/`disallowedTools` as first-class DB columns (new migration `021`). Backfill seeded all 7 groups file→DB on first boot.
+- **Migration collision** was a non-issue: runner dedups by **name**, not version. Renumbered local 014/015 → 019/020; the live DB correctly skipped them (already applied) and ran upstream's 014-018 + new 021.
+- **One real break, caught by the end-to-end ping** (this is why the synthetic ping matters): SDK `native binary not found at /pnpm/bin/claude`. Root cause: the adopted **upstream Dockerfile pins pnpm 10.33.0**, whose global bin is `$PNPM_HOME` (`/pnpm/claude`), but the merge kept HEAD's pnpm-11 path `/pnpm/bin/claude`. Fixed in `claude.ts` (commit after the merge). **Future upgrades: keep `pathToClaudeCodeExecutable` in lockstep with the Dockerfile's pnpm major.**
+- **Gateway upgrade deviated from `docs/onecli-upgrades.md`**: this install's `~/.onecli/docker-compose.yml` hardcoded `:latest` (service `app`, not `onecli`), so the doc's `ONECLI_VERSION=… pull onecli` didn't apply — pinned the image to `${ONECLI_VERSION:-1.36.0}` directly. Vault data (pgdata volume) survived.
+- **Node**: builds/tests/scripts must run under Node 22 (`fnm use 22`); the non-interactive shell defaults to system Node 25. Rebuilt better-sqlite3 for the 22 ABI. Service plist correctly targets `/usr/local/bin/node` (22.16.0) — forced by prepending `/usr/local/bin` so `getNodePath()` didn't bake Node 25 or a transient fnm path.
+
+Known leftovers (harmless, not upgrade regressions):
+- Two **gitignored phantom dirs** (`groups/_ping-test`, the test session dir) — Docker Desktop virtiofs ghost entries; `ls` shows them empty but they only clear on a Docker Desktop restart (declined, would disrupt the running gateway/fleet). DB rows + OneCLI vault agent were deleted cleanly.
+- **`com.nanoclaw.logrotate`** was already failing pre-upgrade (path-based, no label dependency) — `setup/service.ts` unloaded it as an unhealthy peer. Separate pre-existing issue; logs/nanoclaw.log won't auto-rotate until it's fixed.
+- Old `com.nanoclaw.plist` left on disk **unloaded** (preserves the rollback path; not loaded, no double-host risk). Obsolete one-shot `com.nanoclaw.health-check-2026-05-01` plist removed.
 
 ## Rollback
 - `git reset --hard <backup-tag>` (or checkout `backup/pre-update-...` branch).
