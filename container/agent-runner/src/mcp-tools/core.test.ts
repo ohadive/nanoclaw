@@ -48,3 +48,19 @@ describe('send_message MCP tool — in_reply_to plumbing', () => {
     expect(out[0].in_reply_to).toBeNull();
   });
 });
+
+describe('send_message MCP tool — empty text guard', () => {
+  it('refuses empty text and writes nothing', async () => {
+    const result = await sendMessage.handler({ to: 'peer', text: '' });
+
+    expect(result.isError).toBe(true);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('refuses whitespace-only text and writes nothing', async () => {
+    const result = await sendMessage.handler({ to: 'peer', text: '   \n  ' });
+
+    expect(result.isError).toBe(true);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+});

@@ -122,7 +122,10 @@ export const sendMessage: McpToolDefinition = {
   },
   async handler(args) {
     const text = args.text as string;
-    if (!text) return err('text is required');
+    if (!text || !text.trim()) {
+      log('send_message: refusing empty/whitespace-only text — not sent');
+      return err('text is required and cannot be empty/whitespace-only — nothing was sent');
+    }
 
     const routing = resolveRouting(args.to as string | undefined, args.new_thread as boolean | undefined);
     if ('error' in routing) return err(routing.error);

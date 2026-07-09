@@ -436,6 +436,35 @@ describe('error result with no <message> envelope', () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain('was not delivered');
   });
+
+  it('drops an empty wrapped <message> block without delivering or nudging', async () => {
+    // A routine that already sent its report via mid-turn send_message, then
+    // closes its turn with an obligatory-but-empty <message> block to satisfy
+    // "every response must be wrapped" — this must not deliver a blank bubble,
+    // and must not trigger the re-wrap nudge either (something *was* wrapped,
+    // it was just empty).
+    const { query, pushes } = makeResultQuery({
+      type: 'result',
+      text: '<message to="peer"></message>',
+    });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('drops a whitespace-only wrapped <message> block the same way', async () => {
+    const { query, pushes } = makeResultQuery({
+      type: 'result',
+      text: '<message to="peer">   \n  </message>',
+    });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
 });
 
 describe('isCorruptionError', () => {

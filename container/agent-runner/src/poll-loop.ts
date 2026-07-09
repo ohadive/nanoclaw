@@ -616,6 +616,17 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
     const body = match[2].trim();
     lastIndex = MESSAGE_RE.lastIndex;
 
+    // Empty/whitespace-only wrapped blocks are noise, not content — e.g. a
+    // routine that already delivered its report via a mid-turn send_message
+    // call, then closes its turn with an obligatory-but-empty <message> to
+    // satisfy the "always wrap" rule. Drop silently rather than deliver a
+    // blank bubble to the user. Checked before destination resolution so an
+    // empty block never needs a valid `to` at all.
+    if (!body) {
+      log(`Empty <message to="${toName}"> block — skipping (not sent)`);
+      continue;
+    }
+
     const dest = findByName(toName);
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
