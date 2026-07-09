@@ -70,6 +70,15 @@ function insertOutbound(agentGroupId: string, sessionId: string, msgId: string):
   db.close();
 }
 
+function insertOutboundContent(agentGroupId: string, sessionId: string, msgId: string, content: object): void {
+  const db = new Database(outboundDbPath(agentGroupId, sessionId));
+  db.prepare(
+    `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+     VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?)`,
+  ).run(msgId, JSON.stringify(content));
+  db.close();
+}
+
 beforeEach(() => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
@@ -190,6 +199,73 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
     const delivered = getDeliveredIds(inDb);
     inDb.close();
     expect(delivered.has('out-flaky')).toBe(true);
+  });
+});
+
+describe('deliverSessionMessages — empty payload guard', () => {
+  it('skips the channel adapter for an empty text payload but still marks delivered', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutboundContent('ag-1', session.id, 'out-empty', { text: '' });
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_channelType, _platformId, _threadId, _kind, content) {
+        calls.push(content);
+        return 'plat-msg-1';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toHaveLength(0);
+    const inDb = openInboundDb('ag-1', session.id);
+    const delivered = getDeliveredIds(inDb);
+    inDb.close();
+    expect(delivered.has('out-empty')).toBe(true);
+  });
+
+  it('skips a whitespace-only text payload the same way', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutboundContent('ag-1', session.id, 'out-blank', { text: '   \n  ' });
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_channelType, _platformId, _threadId, _kind, content) {
+        calls.push(content);
+        return 'plat-msg-1';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still delivers an empty-text payload that carries files', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutboundContent('ag-1', session.id, 'out-file', { text: '', files: ['report.pdf'] });
+
+    // The empty-text guard must not swallow a legitimate file send — seed a
+    // real outbox file so the normal file-delivery path can complete.
+    const outboxDir = `${TEST_DIR}/v2-sessions/ag-1/${session.id}/outbox/out-file`;
+    fs.mkdirSync(outboxDir, { recursive: true });
+    fs.writeFileSync(`${outboxDir}/report.pdf`, 'fake-pdf-bytes');
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_channelType, _platformId, _threadId, _kind, content, files) {
+        calls.push(content);
+        expect(files).toHaveLength(1);
+        return 'plat-msg-1';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toHaveLength(1);
   });
 
   it('clears attempt counter on successful delivery', async () => {

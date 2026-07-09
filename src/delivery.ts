@@ -359,6 +359,23 @@ async function deliverMessage(
     return;
   }
 
+  // Empty-payload guard (defense in depth): the agent-runner already refuses
+  // to enqueue empty/whitespace-only `send_message` calls and drops empty
+  // wrapped `<message>` blocks before writing them out, but this catches
+  // anything that slips through (older rows written before that guard
+  // existed, or any future write path we haven't audited). Skip the actual
+  // channel send — a blank bubble is pure noise — but still mark delivered
+  // so it doesn't retry forever.
+  if (
+    !content.operation &&
+    typeof content.text === 'string' &&
+    content.text.trim() === '' &&
+    !(Array.isArray(content.files) && content.files.length > 0)
+  ) {
+    log.warn('Skipping delivery of empty message payload', { id: msg.id, sessionId: session.id });
+    return;
+  }
+
   // Read file attachments from outbox if the content declares files.
   // File I/O lives in session-manager.ts (symmetric with inbound
   // extractAttachmentFiles) — delivery just hands buffers to the adapter.
