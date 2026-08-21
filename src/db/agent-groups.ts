@@ -47,20 +47,23 @@ export async function deleteAgentGroup(id: string): Promise<void> {
   await getDb().run('DELETE FROM agent_groups WHERE id = ?', id);
 }
 
-export function pauseAgentGroup(id: string, reason: string | null = null): void {
-  getDb()
-    .prepare('UPDATE agent_groups SET paused_at = ?, paused_reason = ? WHERE id = ?')
-    .run(new Date().toISOString(), reason, id);
+export async function pauseAgentGroup(id: string, reason: string | null = null): Promise<void> {
+  await getDb().run(
+    'UPDATE agent_groups SET paused_at = ?, paused_reason = ? WHERE id = ?',
+    new Date().toISOString(),
+    reason,
+    id,
+  );
 }
 
-export function resumeAgentGroup(id: string): void {
-  getDb().prepare('UPDATE agent_groups SET paused_at = NULL, paused_reason = NULL WHERE id = ?').run(id);
+export async function resumeAgentGroup(id: string): Promise<void> {
+  await getDb().run('UPDATE agent_groups SET paused_at = NULL, paused_reason = NULL WHERE id = ?', id);
 }
 
 /**
  * Set (or clear, with null) the manager's console messaging group — where
  * spoke replies and owner chat converge. See migration 015 / routeAgentMessage.
  */
-export function setAgentGroupConsole(id: string, messagingGroupId: string | null): void {
-  getDb().prepare('UPDATE agent_groups SET console_messaging_group_id = ? WHERE id = ?').run(messagingGroupId, id);
+export async function setAgentGroupConsole(id: string, messagingGroupId: string | null): Promise<void> {
+  await getDb().run('UPDATE agent_groups SET console_messaging_group_id = ? WHERE id = ?', messagingGroupId, id);
 }

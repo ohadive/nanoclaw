@@ -40,10 +40,10 @@ export interface BackfillResult {
 /** The local name every spoke uses to address the manager. */
 const MANAGER_LOCAL_NAME = normalizeName(MANAGER_AGENT_NAME);
 
-export function backfillHubAndSpoke(): BackfillResult {
+export async function backfillHubAndSpoke(): Promise<BackfillResult> {
   const result: BackfillResult = { wired: [], skipped: [], warnings: [] };
 
-  const manager = getAgentGroupByName(MANAGER_AGENT_NAME);
+  const manager = await getAgentGroupByName(MANAGER_AGENT_NAME);
   if (!manager) {
     throw new Error(
       `Manager agent "${MANAGER_AGENT_NAME}" not found. Create it (or set NANOCLAW_MANAGER_AGENT_NAME) before wiring.`,
@@ -53,15 +53,15 @@ export function backfillHubAndSpoke(): BackfillResult {
   const now = new Date().toISOString();
   const affected = new Set<string>([manager.id]);
 
-  for (const spoke of getAllAgentGroups()) {
+  for (const spoke of await getAllAgentGroups()) {
     if (spoke.id === manager.id) continue;
 
     // manager → spoke
-    if (getDestinationByTarget(manager.id, 'agent', spoke.id)) {
+    if (await getDestinationByTarget(manager.id, 'agent', spoke.id)) {
       result.skipped.push(`${manager.name} → ${spoke.name} (exists)`);
     } else {
-      const localName = uniqueLocalName(manager.id, normalizeName(spoke.name), result, manager.name);
-      createDestination({
+      const localName = await uniqueLocalName(manager.id, normalizeName(spoke.name), result, manager.name);
+      await createDestination({
         agent_group_id: manager.id,
         local_name: localName,
         target_type: 'agent',
@@ -73,10 +73,10 @@ export function backfillHubAndSpoke(): BackfillResult {
     }
 
     // spoke → manager
-    if (getDestinationByTarget(spoke.id, 'agent', manager.id)) {
+    if (await getDestinationByTarget(spoke.id, 'agent', manager.id)) {
       result.skipped.push(`${spoke.name} → ${manager.name} (exists)`);
     } else {
-      const existing = getDestinationByName(spoke.id, MANAGER_LOCAL_NAME);
+      const existing = await getDestinationByName(spoke.id, MANAGER_LOCAL_NAME);
       if (existing) {
         // A destination named "marty" already exists but points elsewhere —
         // do NOT silently suffix (that breaks "message marty" instructions).
@@ -85,7 +85,7 @@ export function backfillHubAndSpoke(): BackfillResult {
             `(not the manager). Skipped — resolve manually.`,
         );
       } else {
-        createDestination({
+        await createDestination({
           agent_group_id: spoke.id,
           local_name: MANAGER_LOCAL_NAME,
           target_type: 'agent',
@@ -102,8 +102,8 @@ export function backfillHubAndSpoke(): BackfillResult {
   // projections for every affected agent's active sessions, on BOTH sides,
   // or a running container keeps serving the stale map → "unknown destination".
   for (const agentGroupId of affected) {
-    for (const session of getSessionsByAgentGroup(agentGroupId)) {
-      writeDestinations(agentGroupId, session.id);
+    for (const session of await getSessionsByAgentGroup(agentGroupId)) {
+      await writeDestinations(agentGroupId, session.id);
     }
   }
 
@@ -121,11 +121,16 @@ export function backfillHubAndSpoke(): BackfillResult {
  * from `base`. Manager→spoke names can be safely suffixed (the manager learns
  * the names dynamically), so a collision here just bumps to base-2, base-3, …
  */
-function uniqueLocalName(agentGroupId: string, base: string, result: BackfillResult, ownerName: string): string {
-  if (!getDestinationByName(agentGroupId, base)) return base;
+async function uniqueLocalName(
+  agentGroupId: string,
+  base: string,
+  result: BackfillResult,
+  ownerName: string,
+): Promise<string> {
+  if (!(await getDestinationByName(agentGroupId, base))) return base;
   let suffix = 2;
   let candidate = `${base}-${suffix}`;
-  while (getDestinationByName(agentGroupId, candidate)) {
+  while (await getDestinationByName(agentGroupId, candidate)) {
     suffix++;
     candidate = `${base}-${suffix}`;
   }

@@ -271,7 +271,7 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
 describe('deliverSessionMessages — empty payload guard', () => {
   it('skips the channel adapter for an empty text payload but still marks delivered', async () => {
     seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutboundContent('ag-1', session.id, 'out-empty', { text: '' });
 
     const calls: string[] = [];
@@ -293,7 +293,7 @@ describe('deliverSessionMessages — empty payload guard', () => {
 
   it('skips a whitespace-only text payload the same way', async () => {
     seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutboundContent('ag-1', session.id, 'out-blank', { text: '   \n  ' });
 
     const calls: string[] = [];
@@ -311,7 +311,7 @@ describe('deliverSessionMessages — empty payload guard', () => {
 
   it('still delivers an empty-text payload that carries files', async () => {
     seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutboundContent('ag-1', session.id, 'out-file', { text: '', files: ['report.pdf'] });
 
     // The empty-text guard must not swallow a legitimate file send — seed a

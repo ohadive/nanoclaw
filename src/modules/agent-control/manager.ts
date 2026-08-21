@@ -30,7 +30,7 @@ export function isManagerName(name: string | null | undefined): boolean {
  * may also self-gate (UX — don't show the tools to spokes), but this host
  * check is the real ACL.
  */
-export function isManagerSession(session: Session): boolean {
-  const caller = getAgentGroup(session.agent_group_id);
+export async function isManagerSession(session: Session): Promise<boolean> {
+  const caller = await getAgentGroup(session.agent_group_id);
   return isManagerName(caller?.name);
 }

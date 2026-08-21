@@ -21,7 +21,8 @@ import fs from 'fs';
 import { getAllAgentGroups } from '../../db/agent-groups.js';
 import { getSessionsByAgentGroup } from '../../db/sessions.js';
 import { log } from '../../log.js';
-import { inboundDbPath, openInboundDb } from '../../mailbox/sqlite/index.js';
+import { inboundDbPath } from '../../mailbox/sqlite/index.js';
+import { openInboundDb } from '../../mailbox/sqlite/session-db.js';
 
 export const AGENT_ROSTER_DDL = `CREATE TABLE IF NOT EXISTS agent_roster (
   agent_group_id TEXT PRIMARY KEY,
@@ -37,7 +38,14 @@ export async function writeAgentRoster(managerAgentGroupId: string, sessionId: s
   if (!fs.existsSync(dbPath)) return;
 
   const groups = await getAllAgentGroups();
-  const rows = [];
+  const rows: Array<{
+    agent_group_id: string;
+    name: string;
+    paused_at: string | null;
+    paused_reason: string | null;
+    last_active: string | null;
+    running: number;
+  }> = [];
   for (const g of groups) {
     const sessions = await getSessionsByAgentGroup(g.id);
     const lastActive = sessions.reduce<string | null>((max, s) => {

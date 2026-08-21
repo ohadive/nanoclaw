@@ -14,8 +14,6 @@
  * If you want a different agent to manage pauses, change MANAGER_AGENT_NAME
  * (or convert it into a column on agent_groups, e.g. `can_manage_agents`).
  */
-import type Database from 'better-sqlite3';
-
 import { getAgentGroupByName, pauseAgentGroup, resumeAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
@@ -23,12 +21,8 @@ import { MANAGER_AGENT_NAME, isManagerSession } from './manager.js';
 
 const callerIsAuthorized = isManagerSession;
 
-export async function handlePauseAgentGroup(
-  content: Record<string, unknown>,
-  session: Session,
-  _inDb: Database.Database,
-): Promise<void> {
-  if (!callerIsAuthorized(session)) {
+export async function handlePauseAgentGroup(content: Record<string, unknown>, session: Session): Promise<void> {
+  if (!(await callerIsAuthorized(session))) {
     log.warn('pause_agent_group rejected — unauthorized caller', {
       callerAgentGroupId: session.agent_group_id,
       target: content.name,
@@ -43,22 +37,18 @@ export async function handlePauseAgentGroup(
     return;
   }
 
-  const target = getAgentGroupByName(name);
+  const target = await getAgentGroupByName(name);
   if (!target) {
     log.warn('pause_agent_group: agent group not found', { name });
     return;
   }
 
-  pauseAgentGroup(target.id, reason);
+  await pauseAgentGroup(target.id, reason);
   log.info('Agent group paused', { name: target.name, id: target.id, reason, by: MANAGER_AGENT_NAME });
 }
 
-export async function handleResumeAgentGroup(
-  content: Record<string, unknown>,
-  session: Session,
-  _inDb: Database.Database,
-): Promise<void> {
-  if (!callerIsAuthorized(session)) {
+export async function handleResumeAgentGroup(content: Record<string, unknown>, session: Session): Promise<void> {
+  if (!(await callerIsAuthorized(session))) {
     log.warn('resume_agent_group rejected — unauthorized caller', {
       callerAgentGroupId: session.agent_group_id,
       target: content.name,
@@ -72,12 +62,12 @@ export async function handleResumeAgentGroup(
     return;
   }
 
-  const target = getAgentGroupByName(name);
+  const target = await getAgentGroupByName(name);
   if (!target) {
     log.warn('resume_agent_group: agent group not found', { name });
     return;
   }
 
-  resumeAgentGroup(target.id);
+  await resumeAgentGroup(target.id);
   log.info('Agent group resumed', { name: target.name, id: target.id, by: MANAGER_AGENT_NAME });
 }

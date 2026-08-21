@@ -317,7 +317,6 @@ export function sanitizeStoredMcpServers(raw: unknown, groupName: string): Recor
     }
   }
   return servers;
->>>>>>> upstream/main
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */

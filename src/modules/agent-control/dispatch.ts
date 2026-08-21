@@ -12,8 +12,6 @@
  * notifies the requesting (manager) session — so Marty hears about both
  * approve and reject without extra wiring here.
  */
-import type Database from 'better-sqlite3';
-
 import { getAgentGroup, getAgentGroupByName } from '../../db/agent-groups.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
@@ -29,12 +27,8 @@ const ACTION = 'dispatch_task';
  * Delivery handler for the `dispatch_task` system action. Validates the caller
  * is the manager, resolves the target, and queues an owner/admin approval.
  */
-export async function handleDispatchTask(
-  content: Record<string, unknown>,
-  session: Session,
-  _inDb: Database.Database,
-): Promise<void> {
-  if (!isManagerSession(session)) {
+export async function handleDispatchTask(content: Record<string, unknown>, session: Session): Promise<void> {
+  if (!(await isManagerSession(session))) {
     log.warn('dispatch_task rejected — unauthorized caller', {
       callerAgentGroupId: session.agent_group_id,
       target: content.name,
@@ -50,7 +44,7 @@ export async function handleDispatchTask(
     return;
   }
 
-  const target = getAgentGroupByName(name);
+  const target = await getAgentGroupByName(name);
   if (!target) {
     notifyAgent(session, `dispatch_task failed: no agent named "${name}".`);
     return;
@@ -60,7 +54,7 @@ export async function handleDispatchTask(
     return;
   }
 
-  const manager = getAgentGroup(session.agent_group_id);
+  const manager = await getAgentGroup(session.agent_group_id);
   log.info('dispatch_task requested', { from: manager?.name, to: target.name, task, reason });
 
   await requestApproval({
@@ -87,10 +81,10 @@ export async function applyDispatchTask(ctx: ApprovalHandlerContext): Promise<vo
   const targetName = payload.targetName as string;
   const task = payload.task as string;
 
-  const manager = getAgentGroup(session.agent_group_id);
-  const { session: targetSession } = resolveSession(targetAgentGroupId, null, null, 'agent-shared');
+  const manager = await getAgentGroup(session.agent_group_id);
+  const { session: targetSession } = await resolveSession(targetAgentGroupId, null, null, 'agent-shared');
 
-  writeSessionMessage(targetAgentGroupId, targetSession.id, {
+  await writeSessionMessage(targetAgentGroupId, targetSession.id, {
     id: `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     kind: 'chat',
     timestamp: new Date().toISOString(),
@@ -106,7 +100,7 @@ export async function applyDispatchTask(ctx: ApprovalHandlerContext): Promise<vo
     }),
   });
 
-  const fresh = getSession(targetSession.id);
+  const fresh = await getSession(targetSession.id);
   if (fresh) {
     await wakeContainer(fresh);
   }
