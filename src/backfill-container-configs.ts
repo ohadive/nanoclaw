@@ -28,13 +28,13 @@ interface LegacyContainerJson {
   disallowedTools?: string[];
 }
 
-export function backfillContainerConfigs(): void {
-  const groups = getAllAgentGroups();
+export async function backfillContainerConfigs(): Promise<void> {
+  const groups = await getAllAgentGroups();
   let backfilled = 0;
 
   for (const group of groups) {
     // Skip if already has a config row
-    if (getContainerConfig(group.id)) continue;
+    if (await getContainerConfig(group.id)) continue;
 
     // Read legacy container.json from disk
     const filePath = path.join(GROUPS_DIR, group.folder, 'container.json');
@@ -69,10 +69,11 @@ export function backfillContainerConfigs(): void {
       cli_scope: 'group',
       env: legacy.env ? JSON.stringify(legacy.env) : null,
       disallowed_tools: legacy.disallowedTools ? JSON.stringify(legacy.disallowedTools) : null,
+      timezone: null,
       updated_at: new Date().toISOString(),
     };
 
-    createContainerConfig(row);
+    await createContainerConfig(row);
     backfilled++;
   }
 

@@ -8,13 +8,37 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { closeDb, createAgentGroup, getDb, initTestDb, runMigrations } from '../../db/index.js';
-import { ensureSchema, openInboundDb } from '../../db/session-db.js';
-import { insertTask } from './db.js';
-import { handleRecurrence } from './recurrence.js';
+import { ensureSchema, openInboundDb } from '../../mailbox/sqlite/session-db.js';
+import { insertTaskRow } from '../../mailbox/sqlite/tasks.js';
+import { wrapSqliteInbound } from '../../mailbox/sqlite/index.js';
+import { handleRecurrence, scriptBackoffMinutes } from './recurrence.js';
 import type { Session } from '../../types.js';
+
+// Pin a non-UTC zone so the tz-interpretation test is exact even on UTC CI.
+// Asia/Tokyo is UTC+9 with no DST: "0 9 * * *" must land at 00:00:00Z sharp.
+vi.mock('../../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config.js')>();
+  return { ...actual, TIMEZONE: 'Asia/Tokyo', GROUPS_DIR: '/tmp/nanoclaw-recurrence-test/groups' };
+});
+
+// The auto-pause note goes through the shared appendRunLog helper, which
+// resolves the group folder from the central DB — mock it to a fixed folder.
+// Stateful paused_at backs the fork's group-pause gate test.
+const agentGroupState = vi.hoisted(() => ({ paused_at: null as string | null }));
+vi.mock('../../db/agent-groups.js', () => ({
+  getAgentGroup: (id: string) =>
+    id === 'ag-test' ? { id, folder: 'g-test', paused_at: agentGroupState.paused_at } : undefined,
+}));
+
+// resolveGroupTimezone reads the group's config row from the central DB
+// (not initialized here). Default: no override → falls back to the mocked
+// install TIMEZONE; individual tests set an override to test precedence.
+const containerConfigState = vi.hoisted(() => ({ timezone: null as string | null }));
+vi.mock('../../db/container-configs.js', () => ({
+  getContainerConfig: () => ({ timezone: containerConfigState.timezone }),
+}));
 
 const TEST_DIR = '/tmp/nanoclaw-recurrence-test';
 const DB_PATH = path.join(TEST_DIR, 'inbound.db');
@@ -39,41 +63,25 @@ function fakeSession(): Session {
   } as Session;
 }
 
-// handleRecurrence consults the central DB (agent_groups.paused_at) to skip
-// fanout for paused groups, so the central DB must be initialized and the
-// session's agent group must exist. Default fixture is an unpaused group.
-beforeEach(() => {
-  const db = initTestDb();
-  runMigrations(db);
-  createAgentGroup({
-    id: 'ag-test',
-    name: 'Test Agent',
-    folder: 'test-agent',
-    agent_provider: null,
-    created_at: new Date().toISOString(),
-  });
-});
-
 afterEach(() => {
-  closeDb();
+  containerConfigState.timezone = null;
+  agentGroupState.paused_at = null;
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
 describe('handleRecurrence', () => {
   it('clones a completed recurring task with a next-run in the future', async () => {
     const db = freshDb();
-    insertTask(db, {
+    insertTaskRow(db, {
       id: 'task-1',
+      seriesId: 'task-1',
       processAfter: '2020-01-01T00:00:00.000Z',
       recurrence: '0 9 * * *', // every day at 09:00 (user TZ)
-      platformId: null,
-      channelType: null,
-      threadId: null,
       content: JSON.stringify({ prompt: 'daily digest' }),
     });
     db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-1'`).run();
 
-    await handleRecurrence(db, fakeSession());
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
 
     const rows = db
       .prepare(`SELECT id, status, process_after, recurrence, series_id FROM messages_in ORDER BY seq`)
@@ -94,40 +102,79 @@ describe('handleRecurrence', () => {
     expect(new Date(follow.process_after).getTime()).toBeGreaterThan(Date.now());
   });
 
+  it('interprets the cron expression in TIMEZONE, not UTC (the v1 regression)', async () => {
+    const db = freshDb();
+    insertTaskRow(db, {
+      id: 'task-tz',
+      seriesId: 'task-tz',
+      processAfter: '2020-01-01T00:00:00.000Z',
+      recurrence: '0 9 * * *', // 09:00 Asia/Tokyo === 00:00 UTC, exactly
+      content: JSON.stringify({ prompt: 'daily digest' }),
+    });
+    db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-tz'`).run();
+
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    const follow = db.prepare(`SELECT process_after FROM messages_in WHERE id != 'task-tz'`).get() as {
+      process_after: string;
+    };
+    // Drop the `{ tz }` option in recurrence.ts and this reads
+    // T09:00:00 (09:00 UTC) instead — red, even on a UTC CI runner.
+    expect(follow.process_after).toMatch(/T00:00:00/);
+  });
+
+  it('re-arms in the group timezone override, not the install TIMEZONE', async () => {
+    // Install tz is pinned to Asia/Tokyo above; the group override must win.
+    // Asia/Kolkata is UTC+5:30 with no DST: 09:00 local === 03:30 UTC, exactly.
+    containerConfigState.timezone = 'Asia/Kolkata';
+    const db = freshDb();
+    insertTaskRow(db, {
+      id: 'task-group-tz',
+      seriesId: 'task-group-tz',
+      processAfter: '2020-01-01T00:00:00.000Z',
+      recurrence: '0 9 * * *',
+      content: JSON.stringify({ prompt: 'daily digest' }),
+    });
+    db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-group-tz'`).run();
+
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    const follow = db.prepare(`SELECT process_after FROM messages_in WHERE id != 'task-group-tz'`).get() as {
+      process_after: string;
+    };
+    expect(follow.process_after).toMatch(/T03:30:00/);
+  });
+
   it('does not clone rows whose recurrence is already cleared', async () => {
     const db = freshDb();
-    insertTask(db, {
+    insertTaskRow(db, {
       id: 'task-1',
+      seriesId: 'task-1',
       processAfter: '2020-01-01T00:00:00.000Z',
       recurrence: null,
-      platformId: null,
-      channelType: null,
-      threadId: null,
       content: JSON.stringify({ prompt: 'one-off' }),
     });
     db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-1'`).run();
 
-    await handleRecurrence(db, fakeSession());
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
 
     const count = (db.prepare(`SELECT COUNT(*) AS c FROM messages_in`).get() as { c: number }).c;
     expect(count).toBe(1);
   });
 
   it('skips fanout while the agent group is paused', async () => {
-    getDb().prepare(`UPDATE agent_groups SET paused_at = ? WHERE id = 'ag-test'`).run(new Date().toISOString());
+    agentGroupState.paused_at = new Date().toISOString();
     const db = freshDb();
-    insertTask(db, {
+    insertTaskRow(db, {
       id: 'task-1',
+      seriesId: 'task-1',
       processAfter: '2020-01-01T00:00:00.000Z',
       recurrence: '0 9 * * *',
-      platformId: null,
-      channelType: null,
-      threadId: null,
       content: JSON.stringify({ prompt: 'daily digest' }),
     });
     db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-1'`).run();
 
-    await handleRecurrence(db, fakeSession());
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
 
     // No clone created, and the recurrence is left intact so it resumes on unpause.
     const rows = db.prepare(`SELECT id, recurrence FROM messages_in`).all() as Array<{
@@ -136,5 +183,90 @@ describe('handleRecurrence', () => {
     }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].recurrence).toBe('0 9 * * *');
+  });
+});
+
+describe('handleRecurrence — script-failure backoff (streak derived from failed runs)', () => {
+  // A series whose last `fails` occurrences all landed as FAILED (script-skip:error
+  // runs, as synced by syncProcessingAcks). Only the newest row keeps recurrence —
+  // older occurrences had theirs cleared when they were re-armed. fails=0 seeds one
+  // healthy completed run.
+  function seedFailedStreak(db: ReturnType<typeof freshDb>, fails: number) {
+    const rows = Math.max(fails, 1);
+    for (let i = 0; i < rows; i++) {
+      insertTaskRow(db, {
+        id: `task-s-${i}`,
+        seriesId: 'task-s-0',
+        processAfter: '2020-01-01T00:00:00.000Z',
+        recurrence: i === rows - 1 ? '* * * * *' : null, // every minute — raw cron next is ~+1min
+        content: JSON.stringify({ prompt: 'monitor', script: 'exit 1' }),
+      });
+      db.prepare(`UPDATE messages_in SET status = ? WHERE id = ?`).run(
+        fails === 0 ? 'completed' : 'failed',
+        `task-s-${i}`,
+      );
+    }
+    return `task-s-${rows - 1}`; // the row carrying recurrence
+  }
+
+  const clone = (db: ReturnType<typeof freshDb>) =>
+    db.prepare(`SELECT status, process_after, recurrence FROM messages_in WHERE id NOT LIKE 'task-s-%'`).get() as {
+      status: string;
+      process_after: string;
+      recurrence: string | null;
+    };
+
+  it('exports the documented 2,4,8,…,60 progression', () => {
+    expect([1, 2, 3, 4, 5, 6, 7].map(scriptBackoffMinutes)).toEqual([2, 4, 8, 16, 32, 60, 60]);
+  });
+
+  it('pushes the clone past raw cron cadence while the script is failing', async () => {
+    const db = freshDb();
+    seedFailedStreak(db, 3); // streak 3 → backoff 8 min; cron next ≈ +1 min
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    const next = clone(db);
+    expect(next.status).toBe('pending');
+    const deltaMin = (new Date(next.process_after).getTime() - Date.now()) / 60_000;
+    expect(deltaMin).toBeGreaterThan(7); // backoff won over the 1-min cron grid
+  });
+
+  it('a healthy series (trailing run completed) re-arms on the raw cron grid', async () => {
+    const db = freshDb();
+    seedFailedStreak(db, 0);
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    const next = clone(db);
+    expect(next.status).toBe('pending');
+    const deltaMin = (new Date(next.process_after).getTime() - Date.now()) / 60_000;
+    expect(deltaMin).toBeLessThan(2); // no backoff applied
+  });
+
+  it('auto-pauses the series at the cap instead of re-arming', async () => {
+    const db = freshDb();
+    const liveId = seedFailedStreak(db, 8);
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    const next = clone(db);
+    expect(next.status).toBe('paused'); // `ncl tasks resume` revives in place
+    expect(next.recurrence).toBe('* * * * *');
+    const original = db.prepare(`SELECT recurrence FROM messages_in WHERE id = ?`).get(liveId) as {
+      recurrence: string | null;
+    };
+    expect(original.recurrence).toBeNull(); // not re-cloned next sweep
+  });
+
+  it('writes the auto-pause note into the series run log via the shared appendRunLog', async () => {
+    const db = freshDb();
+    seedFailedStreak(db, 8);
+    await handleRecurrence(wrapSqliteInbound(db), fakeSession());
+
+    // Same file + format appendRunLog owns: groups/<folder>/tasks/<series>.md
+    const logFile = path.join(TEST_DIR, 'groups', 'g-test', 'tasks', 'task-s-0.md');
+    expect(fs.existsSync(logFile)).toBe(true);
+    const content = fs.readFileSync(logFile, 'utf8');
+    expect(content).toContain('auto-paused after 8 consecutive script failures');
+    expect(content).toContain('ncl tasks resume task-s-0');
+    expect(content).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — /m); // appendRunLog's local-time stamp
   });
 });

@@ -9,9 +9,9 @@
 import fs from 'fs';
 import path from 'path';
 
-import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
+import { getCurrentInReplyTo } from '../db/session-state.js';
 import { getSessionRouting } from '../db/session-routing.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -41,10 +41,7 @@ function destinationList(): string {
 /**
  * Resolve a destination name to routing fields.
  *
- * If `to` is omitted, use the session's default reply routing (channel +
- * thread the conversation is in) — the agent replies in place.
- *
- * If `to` is specified, look up the named destination. If it resolves to
+ * Look up the explicitly named destination. If it resolves to
  * the same channel the session is bound to, the session's thread_id is
  * preserved so replies land in the correct thread. Otherwise thread_id
  * is null (a cross-destination send starts a new conversation).
@@ -112,7 +109,7 @@ export const sendMessage: McpToolDefinition = {
       properties: {
         to: {
           type: 'string',
-          description: 'Destination name (e.g., "family", "worker-1"). Optional if you have only one destination.',
+          description: 'Destination name (e.g., "family", "worker-1").',
         },
         text: { type: 'string', description: 'Message content' },
         new_thread: { type: 'boolean', description: 'Start a new thread in the channel (a new root message) instead of replying in the current thread. Use for a genuinely new topic.' },
@@ -131,7 +128,7 @@ export const sendMessage: McpToolDefinition = {
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
-    const seq = writeMessageOut({
+    const seq = await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -153,7 +150,7 @@ export const sendFile: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        to: { type: 'string', description: 'Destination name. Optional if you have only one destination.' },
+        to: { type: 'string', description: 'Destination name.' },
         path: { type: 'string', description: 'File path (relative to /workspace/agent/ or absolute)' },
         text: { type: 'string', description: 'Optional accompanying message' },
         filename: { type: 'string', description: 'Display name (default: basename of path)' },
@@ -179,7 +176,7 @@ export const sendFile: McpToolDefinition = {
     fs.mkdirSync(outboxDir, { recursive: true });
     fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
 
-    writeMessageOut({
+    await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -221,7 +218,7 @@ export const editMessage: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,
@@ -262,7 +259,7 @@ export const addReaction: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,

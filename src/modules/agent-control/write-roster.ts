@@ -21,7 +21,7 @@ import fs from 'fs';
 import { getAllAgentGroups } from '../../db/agent-groups.js';
 import { getSessionsByAgentGroup } from '../../db/sessions.js';
 import { log } from '../../log.js';
-import { inboundDbPath, openInboundDb } from '../../session-manager.js';
+import { inboundDbPath, openInboundDb } from '../../mailbox/sqlite/index.js';
 
 export const AGENT_ROSTER_DDL = `CREATE TABLE IF NOT EXISTS agent_roster (
   agent_group_id TEXT PRIMARY KEY,
@@ -32,29 +32,30 @@ export const AGENT_ROSTER_DDL = `CREATE TABLE IF NOT EXISTS agent_roster (
   running        INTEGER NOT NULL DEFAULT 0
 )`;
 
-export function writeAgentRoster(managerAgentGroupId: string, sessionId: string): void {
+export async function writeAgentRoster(managerAgentGroupId: string, sessionId: string): Promise<void> {
   const dbPath = inboundDbPath(managerAgentGroupId, sessionId);
   if (!fs.existsSync(dbPath)) return;
 
-  const groups = getAllAgentGroups();
-  const rows = groups.map((g) => {
-    const sessions = getSessionsByAgentGroup(g.id);
+  const groups = await getAllAgentGroups();
+  const rows = [];
+  for (const g of groups) {
+    const sessions = await getSessionsByAgentGroup(g.id);
     const lastActive = sessions.reduce<string | null>((max, s) => {
       if (!s.last_active) return max;
       return !max || s.last_active > max ? s.last_active : max;
     }, null);
     const running = sessions.some((s) => s.container_status === 'running' || s.container_status === 'idle') ? 1 : 0;
-    return {
+    rows.push({
       agent_group_id: g.id,
       name: g.name,
       paused_at: g.paused_at ?? null,
       paused_reason: g.paused_reason ?? null,
       last_active: lastActive,
       running,
-    };
-  });
+    });
+  }
 
-  const db = openInboundDb(managerAgentGroupId, sessionId);
+  const db = openInboundDb(dbPath);
   try {
     db.exec(AGENT_ROSTER_DDL);
     const tx = db.transaction(() => {
