@@ -17,7 +17,7 @@
  * The manager name is read from NANOCLAW_MANAGER_AGENT_NAME (default "Marty"),
  * mirroring src/modules/agent-control/manager.ts on the host.
  */
-import { getInboundDb } from '../db/connection.js';
+import { getInboundDb } from '../mailbox/sqlite/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { loadConfig } from '../config.js';
 import { registerTools } from './server.js';
