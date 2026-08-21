@@ -10,3 +10,4 @@ import './cli.js';
 import './whatsapp.js';
 import './slack.js';
 import './telegram.js';
+import './slack-a2a-guard.js';
