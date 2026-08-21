@@ -16,6 +16,8 @@ export function createCommandRunner(): CommandRunner {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      // pnpm install / vitest output exceeds Node's 1MB default → ENOBUFS.
+      maxBuffer: 64 * 1024 * 1024,
     }).trim();
   return {
     run,
