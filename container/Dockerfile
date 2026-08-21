@@ -10,7 +10,13 @@
 # bind mount at runtime (see src/container-runner.ts). Source-only changes
 # never require an image rebuild.
 
-FROM node:22-slim
+# Pinned to 22.20: the floating `node:22-slim` tag drifted to 22.23.0, which
+# breaks node-fetch 2.x (ERR_STREAM_PREMATURE_CLOSE on Google's OAuth token
+# endpoint). The Gmail MCP (@gongrzhe → googleapis@129 → gaxios 6 → node-fetch 2)
+# refreshes tokens through node-fetch 2, so on 22.23+ every token refresh
+# premature-closes and Gmail silently dies once a token expires. 22.20 is the
+# last confirmed-good minor. Revisit when the Gmail MCP moves off node-fetch 2.
+FROM node:22.20-slim
 
 # ---- Build-time arguments ----------------------------------------------------
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.

@@ -358,20 +358,25 @@ export function buildMounts(
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
   }
 
-  // Gmail / Calendar / Notion MCP credentials — mount from host home if
-  // present. Available to all agent groups (matches v1 user config).
+  // Gmail / Calendar MCP credentials — Marty (dm-with-ohad) ONLY. These
+  // grant send-as-Ohad email and calendar-write on Ohad's accounts; no other
+  // agent group may hold them (2026-07-29: an agent emailed a client as Ohad
+  // — the creds were mounted into every container with no group gating).
   const homeDir = os.homedir();
-  const gmailDir = path.join(homeDir, '.gmail-mcp');
-  if (fs.existsSync(gmailDir)) {
-    mounts.push({ hostPath: gmailDir, containerPath: '/home/node/.gmail-mcp', readonly: false });
-  }
-  const gmailOhadDir = path.join(homeDir, '.gmail-mcp-ohad');
-  if (fs.existsSync(gmailOhadDir)) {
-    mounts.push({ hostPath: gmailOhadDir, containerPath: '/home/node/.gmail-mcp-ohad', readonly: false });
-  }
-  const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
-  if (fs.existsSync(gcalDir)) {
-    mounts.push({ hostPath: gcalDir, containerPath: '/home/node/.config/google-calendar-mcp', readonly: false });
+  const GOOGLE_CREDS_GROUPS = ['dm-with-ohad'];
+  if (GOOGLE_CREDS_GROUPS.includes(agentGroup.folder)) {
+    const gmailDir = path.join(homeDir, '.gmail-mcp');
+    if (fs.existsSync(gmailDir)) {
+      mounts.push({ hostPath: gmailDir, containerPath: '/home/node/.gmail-mcp', readonly: false });
+    }
+    const gmailOhadDir = path.join(homeDir, '.gmail-mcp-ohad');
+    if (fs.existsSync(gmailOhadDir)) {
+      mounts.push({ hostPath: gmailOhadDir, containerPath: '/home/node/.gmail-mcp-ohad', readonly: false });
+    }
+    const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
+    if (fs.existsSync(gcalDir)) {
+      mounts.push({ hostPath: gcalDir, containerPath: '/home/node/.config/google-calendar-mcp', readonly: false });
+    }
   }
   const notionDir = path.join(homeDir, '.notion-mcp');
   if (fs.existsSync(notionDir)) {
