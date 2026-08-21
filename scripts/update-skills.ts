@@ -90,9 +90,15 @@ function readImports(file: string): string[] {
   return names;
 }
 
+// Barrel imports owned by another skill's install steps — not standalone
+// channels, so they have no add-<name> skill of their own. (slack-a2a-guard
+// is appended by /add-slack; fork patch until upstream's detector learns
+// ownership.)
+const OWNED_BARREL_MODULES = new Set(['slack-a2a-guard']);
+
 export function detectInstalledSkills(root: string): InstalledSkill[] {
   const channels = readImports(path.join(root, 'src/channels/index.ts'))
-    .filter((name) => name !== 'cli')
+    .filter((name) => name !== 'cli' && !OWNED_BARREL_MODULES.has(name))
     .map((name) => ({ name, skillName: `add-${name}`, kind: 'channel' as const }));
   const providers = new Set([
     ...readImports(path.join(root, 'src/providers/index.ts')),
