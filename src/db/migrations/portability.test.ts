@@ -23,6 +23,10 @@ const FROZEN_SQLITE_ONLY = new Set([
   'wiring-threads-override',
   'container-config-timezone',
   'approval-question-render-metadata',
+  // Fork migrations (pre-dating the async boundary; renumbered 024–026):
+  'agent-group-pause',
+  'agent-console-messaging-group',
+  'container-env-disallowed-tools',
 ]);
 
 const BANNED_PORTABLE_SQL = [

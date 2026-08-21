@@ -22,7 +22,10 @@ const roots: string[] = [];
 let previousUpdateDir: string | undefined;
 
 function temp(prefix: string): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // realpath: macOS os.tmpdir() is the /var → /private/var symlink; git and
+  // the state file store the real path, and loadState's path-safety check
+  // compares resolved (not realpathed) paths — the symlinked form mismatches.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   roots.push(root);
   return root;
 }

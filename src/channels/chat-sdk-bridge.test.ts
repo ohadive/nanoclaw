@@ -254,9 +254,11 @@ describe('createChatSdkBridge.deliver — ask_question cards (button styles)', (
     const msg = calls[0].message as {
       card?: { children?: Array<{ type?: string; children?: CapturedButton[] }> };
     };
-    const actionsRow = msg.card?.children?.find((c) => c.type === 'actions');
-    expect(actionsRow).toBeDefined();
-    return actionsRow?.children ?? [];
+    // Fork renders one Actions wrapper per option (Telegram line-per-option),
+    // so collect buttons across every actions row.
+    const actionsRows = (msg.card?.children ?? []).filter((c) => c.type === 'actions');
+    expect(actionsRows.length).toBeGreaterThan(0);
+    return actionsRows.flatMap((row) => row.children ?? []);
   }
 
   it('passes each option style through to the Button, and omits it when unset', async () => {
