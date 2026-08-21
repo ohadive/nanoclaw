@@ -11,3 +11,4 @@ import './whatsapp.js';
 import './slack.js';
 import './telegram.js';
 import './slack-a2a-guard.js'; // owned by /add-slack — not a standalone channel skill
+import './slack-a2a-guard.js';
