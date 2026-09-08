@@ -142,7 +142,11 @@ export function setBotInboundPolicy(policy: SlackBotInboundPolicy | null): void 
  * are dropped unless the installed admission policy admits them. Shaped as a
  * `BridgeInboundPolicy` — applied once per bridge instance at bridge setup.
  */
-export function wrapSlackBotGuard(setup: ChannelSetup, instanceKey: string): ChannelSetup {
+export function wrapSlackBotGuard(
+  setup: ChannelSetup,
+  instanceKey: string,
+  context?: { selfUserId?: () => string | undefined },
+): ChannelSetup {
   return {
     ...setup,
     async onInbound(platformId: string, threadId: string | null, message: InboundMessage) {
@@ -200,6 +204,19 @@ export function wrapSlackBotGuard(setup: ChannelSetup, instanceKey: string): Cha
 
       if (decision.senderId) {
         (message.content as Record<string, unknown>).senderId = decision.senderId;
+      }
+
+      // Text-level self-mention detection for admitted bot messages. Slack
+      // never emits `app_mention` when the mentioner is a bot, so the SDK's
+      // platform-confirmed isMention is always false here; without this flip
+      // a mention-mode wiring can never engage on bot-authored a2a traffic.
+      // Humans are untouched (their mentions arrive platform-confirmed).
+      if (message.isMention !== true) {
+        const selfId = context?.selfUserId?.();
+        const text = (message.content as Record<string, unknown>)?.text;
+        if (selfId && typeof text === 'string' && text.includes(`<@${selfId}>`)) {
+          message.isMention = true;
+        }
       }
       // Report acceptance only after downstream accepted it — a throw in the
       // host's onInbound must not count a message that never reached a session.
